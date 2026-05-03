@@ -1,5 +1,59 @@
 # Synapse — Hybrid Knowledge Framework
 
+```
+                          KNOWLEDGE IN
+                              │
+                              │
+                 ┌────────────┴────────────┐
+                 │      PUSH / HOOK        │
+                 │   (ingest layer)        │
+                 └────────────┬────────────┘
+                              │
+                     ┌────────┴────────┐
+                     │   CHUNK + EMBED │
+                     │  (4000 chars,   │
+                     │   nomic-768d)   │
+                     └────────┬────────┘
+                              │
+                 ┌────────────┼────────────┐
+                 │            │            │
+         ┌───────┴──────┐     │    ┌───────┴──────┐
+         │              │     │    │              │
+    ┌────┴────┐   ┌────┴────┐   ┌────┴────┐   ┌────┴────┐
+    │ LANCE-  │   │         │   │ SQLITE  │   │         │
+    │ DB      │   │         │   │ FTS5    │   │         │
+    │ ▓▓▓▓▓▓▓ │   │         │   │ ▓▓▓▓▓▓▓ │   │         │
+    │ dense   │   │         │   │ keyword │   │         │
+    │ vectors │   │         │   │ search  │   │         │
+    └────┬────┘   │         │   └────┬────┘   │         │
+         │        │         │        │        │         │
+         └────────┴────┬────┴────────┘        │         │
+                       │                      │         │
+              ┌────────┴────────┐             │         │
+              │   RRF FUSION    │             │         │
+              │  (60% dense     │             │         │
+              │  + 40% FTS5)    │             │         │
+              └────────┬────────┘             │         │
+                       │                      │         │
+                       │        ┌─────────────┴────────┐
+                       │        │    SCOPE FILTER       │
+                       │        │  shared / project      │
+                       │        └─────────────┬────────┘
+                       │                      │
+              ┌────────┴──────────────────────┘
+              │
+              │
+    ┌─────────┴──────────┐
+    │     SEARCH OUT     │
+    │  (Stage 2 — after  │
+    │   CLAUDE.md + ψ/)  │
+    └────────────────────┘
+
+    ◂──────────────────────────────────────────▸
+              NEURON ─ SYNAPSE ─ NEURON
+         (source files)  (this)   (knowledge)
+```
+
 > "The junction where knowledge connects."
 
 Local-first hybrid search: dense vectors (LanceDB) + keyword search (SQLite FTS5) fused with Reciprocal Rank Fusion. No external services required — runs entirely on your machine.
