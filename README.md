@@ -1,6 +1,28 @@
 # Synapse — Hybrid Knowledge Framework
 
 ```
+    ╭─────────────────────── ╭─────────────────────── ╭───────────────────────
+    │                       │                       │
+    │  ─ ─ ─ ─ ─ ─ ─ ─    │                       │    ─ ─ ─ ─ ─ ─ ─ ─
+    │   AXON TERMINAL       │   SYNAPTIC CLEFT      │   DENDRITE / RECEPTOR
+    │                       │                       │
+    │    ╭──────────╮       │    ◇ neurotransmitter  │       ╭──────────╮
+    │    │ ▒▒▒▒▒▒▒▒ │       │    ◇  (knowledge)     │       │ ◈◈◈◈◈◈◈ │
+    │    │ ▒ vesicle▒│──────┼──◇────◇────◇─────────┼──────▶│ ◈ receptor◈│
+    │    │ ▒▒▒▒▒▒▒▒ │       │    ◇  flows across    │       │ ◈◈◈◈◈◈◈ │
+    │    ╰──────────╯       │    ◇  the gap         │       ╰──────────╯
+    │                       │                       │
+    │    ▓▓▓▓▓▓▓▓▓▓▓▓▓▓    │                       │    ▓▓▓▓▓▓▓▓▓▓▓▓▓▓
+    │    ▓ source files ▓   │    .synapse/          │    ▓ knowledge  ▓
+    │    ▓ ψ/ docs  code ▓  │    vault.db + vectors  │    ▓ retrieved  ▓
+    │    ▓▓▓▓▓▓▓▓▓▓▓▓▓▓    │                       │    ▓▓▓▓▓▓▓▓▓▓▓▓▓▓
+    │                       │                       │
+    ╰───────────────────────╰───────────────────────╰───────────────────────
+          PRESYNAPTIC              THE SYNAPSE            POSTSYNAPTIC
+         (Stage 1 input)         (this framework)       (Stage 2 output)
+```
+
+```
                           KNOWLEDGE IN
                               │
                               │
