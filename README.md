@@ -48,7 +48,7 @@
     ┌─────────┴──────────┐
     │     SEARCH OUT     │
     │  (Stage 2 — after  │
-    │   CLAUDE.md + ψ/)  │
+    │   project docs)     │
     └────────────────────┘
 
     ◂──────────────────────────────────────────▸
@@ -66,18 +66,18 @@ Inspired by [MemPalace](https://github.com/MemPalace/mempalace), [arra-oracle](h
 
 ```bash
 # Install
-pip install -e ~/.claude/skills/synapse
+pip install -e .
 
 # Initialize vault in a project
-synapse init --scope emily-oracle
+synapse init --scope my-project
 
 # Push knowledge
-synapse push ψ/memory/learnings/docker-patterns.md
+synapse push path/to/document.md
 synapse push --title "Docker patterns" --text "Use compose v2..." --scope shared
 
 # Search
 synapse search "docker infrastructure patterns"
-synapse search --scope ai-server "redis cache"
+synapse search --scope my-project "redis cache"
 synapse search --mode fts "exact keyword"
 
 # Check status
@@ -90,38 +90,38 @@ synapse scope
 Synapse is **Stage 2** — consulted after primary context is exhausted:
 
 ```
-Stage 1 (อ่านก่อน — อยู่ใน context แล้ว)
+Stage 1 (read first — already in context)
 ├── CLAUDE.md                          ← rules, identity
 ├── .claude/docs/                      ← project docs
-└── ψ/ (psi vault) ถ้ามี               ← learnings, retros, handoffs
+└── project knowledge files            ← learnings, retros, handoffs
 
-Stage 2 (ค้นหาเมื่อ Stage 1 ไม่พอ)
-└── .synapse/ (database vault)          ← hybrid search เจาะจง
+Stage 2 (search when Stage 1 is not enough)
+└── .synapse/ (database vault)         ← targeted hybrid search
 ```
 
-Projects without ψ/ vault still have Stage 1 (CLAUDE.md + .claude/docs), then synapse supplements when specific knowledge is needed.
+Projects without a knowledge vault still have Stage 1 (CLAUDE.md + .claude/docs), then synapse supplements when specific knowledge is needed.
 
 ## Architecture
 
 ```
-.synapse/                   ← Database vault (separate from ψ/)
+.synapse/                   ← Database vault
 ├── vault.db                ← SQLite (FTS5 + metadata + scope + supersession)
 ├── vectors/                ← LanceDB (dense vectors, local files)
 └── config.yaml             ← Scope, models, retrieval settings
 
-ψ/                          ← Source of truth (human-readable)
-├── memory/learnings/       → auto-indexed via PostToolUse hook
-└── memory/retrospectives/  → auto-indexed via PostToolUse hook
+project knowledge/          ← Source files (human-readable)
+├── learnings/              → auto-indexed via PostToolUse hook
+└── retrospectives/         → auto-indexed via PostToolUse hook
 ```
 
-| | ψ/ (psi) | .synapse/ (vault) |
+| | Source files | .synapse/ (vault) |
 |---|---|---|
-| What | Oracle brain — markdown files | Database vault — SQLite + LanceDB |
+| What | Knowledge base — markdown files | Database vault — SQLite + LanceDB |
 | Who reads | Humans, Claude (Read) | synapse search, MCP tools |
 | Format | .md (human-readable) | binary DB + vector index |
-| Commit | No (vault state) | No (.gitignore) |
+| Commit | Yes | No (.gitignore) |
 
-ψ/ = source of truth, .synapse/ = search index
+Source files = human-readable truth, .synapse/ = search index
 
 ## Search Modes
 
@@ -169,7 +169,7 @@ SQLite indexing is near-instant. Embedding cost dominates — amortized with Oll
 
 | Filter | Top-3 results |
 |--------|--------------|
-| scope=emily-oracle | project-specific results |
+| scope=my-project | project-specific results |
 | scope=all (default) | all results, best match first |
 
 ### Vault Stats
@@ -178,7 +178,7 @@ SQLite indexing is near-instant. Embedding cost dominates — amortized with Oll
 |--------|-------|
 | Documents | 13 |
 | Vectors | 23 (768-dim) |
-| Scopes | emily-oracle: 13 docs |
+| Scopes | my-project: 13 docs |
 | Doc types | learning: 13 |
 | Superseded | 0 |
 | Embedding model | nomic-embed-text (Ollama, local) |
@@ -200,6 +200,7 @@ SQLite indexing is near-instant. Embedding cost dominates — amortized with Oll
 | `synapse search --limit N` | Max results (default 10) |
 | `synapse status` | Vault statistics |
 | `synapse scope` | List all scopes |
+| `synapse rebuild [--scope X] [--no-backup]` | Rebuild vault indexes from source files |
 
 ## MCP Tools
 
@@ -212,20 +213,38 @@ Available in Claude Code without `/synapse` prefix:
 | `synapse_search` | Hybrid search |
 | `synapse_scope` | List scopes |
 | `synapse_status` | Vault statistics |
+| `synapse_rebuild` | Rebuild vault indexes from source files |
 
 ## Auto-Indexing (Hook)
 
-PostToolUse hook automatically indexes files written to:
-- `*/memory/learnings/*.md`
-- `*/memory/retrospectives/*.md`
+PostToolUse hook automatically indexes files written to knowledge directories. For example:
+- `*/learnings/*.md`
+- `*/retrospectives/*.md`
 
 Scope is auto-detected from file path.
+
+## Rebuilding Indexes
+
+If the vault becomes corrupted or indexes drift out of sync with source files:
+
+```bash
+# Rebuild from all learnings/ and retrospectives/ files
+synapse rebuild
+
+# Rebuild only a specific scope
+synapse rebuild --scope my-project
+
+# Skip vault.db backup (faster, no safety net)
+synapse rebuild --no-backup
+```
+
+Rebuild steps: backup vault.db → delete indexes → recreate schema → discover source files → re-index. Config.yaml is preserved across rebuilds.
 
 ## Scope System
 
 Every document has a scope:
 - **shared** — knowledge all projects use (docker patterns, security, etc.)
-- **\<project-name\>** — project-specific (emily-oracle, ai-server, etc.)
+- **\<project-name\>** — project-specific (my-project, another-project, etc.)
 
 Scope is resolved: explicit `--scope` > auto-detect from path > default `shared`.
 
@@ -244,10 +263,28 @@ mcp>=1.0.0        # MCP SDK (optional, for Claude Code integration)
 
 Requires Ollama running locally with `nomic-embed-text` model for vector search.
 
+## Testing
+
+```bash
+# Install with dev dependencies
+pip install -e ".[dev]"
+
+# Run all tests (no Ollama required)
+pytest tests/ -v
+
+# Run with coverage
+pytest tests/ --cov=synapse --cov-report=term-missing
+
+# LanceDB-dependent tests require lancedb installed
+pip install -e ".[dev]"  # includes pytest + pytest-cov
+```
+
+Tests mock Ollama at the `httpx.post` level, so no running Ollama server is needed.
+
 ## Roadmap
 
 - **v1** — Local skill (SQLite + LanceDB, CLI, MCP, hooks) ✅
-- **v1.1** — Tests, rebuild command, better error handling
+- **v1.1** — Tests, rebuild command, custom exceptions, better error handling ✅
 - **v2** — Service mode (MCP server as daemon, cross-project shared vault)
 - **v3** — Platform (Qdrant/Postgres options, API, multi-user)
 

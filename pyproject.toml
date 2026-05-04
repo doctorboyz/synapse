@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "synapse"
-version = "0.1.0"
+version = "1.1.0"
 description = "Synapse — Hybrid Knowledge Framework (dense vectors + FTS5 keyword search, RRF fusion)"
 readme = "README.md"
 license = "MIT"

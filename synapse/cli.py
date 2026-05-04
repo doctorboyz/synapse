@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -11,6 +12,10 @@ from synapse.retrieve.hybrid_search import HybridSearch
 from synapse.scope.manager import ScopeManager, detect_scope
 from synapse.ingest.push import Push
 from synapse.ingest.init import init_vault
+from synapse.exceptions import SynapseError, VaultAlreadyExistsError, LanceDBStoreError
+from synapse.logging_config import setup_logging
+
+log = logging.getLogger("synapse.cli")
 
 
 def find_vault() -> Path:
@@ -30,7 +35,7 @@ def cmd_push(args):
     sqlite = SQLiteStore(vault)
     try:
         lancedb = LanceDBStore(vault)
-    except ImportError:
+    except (ImportError, LanceDBStoreError):
         lancedb = None
     scope_mgr = ScopeManager(sqlite)
     pusher = Push(sqlite, lancedb, scope_mgr)
@@ -67,7 +72,7 @@ def cmd_search(args):
     try:
         lancedb = LanceDBStore(vault)
         search = HybridSearch(sqlite, lancedb)
-    except ImportError:
+    except (ImportError, LanceDBStoreError):
         lancedb = None
         search = None
 
@@ -112,13 +117,16 @@ def cmd_status(args):
     for dtype, count in stats["by_type"].items():
         print(f"    {dtype}: {count} docs")
 
+    lancedb = None
     try:
         lancedb = LanceDBStore(vault)
         vec_stats = lancedb.stats()
         print(f"  Vectors: {vec_stats['total_vectors']} ({vec_stats['embedding_dim']}-dim)")
-        lancedb.close()
-    except ImportError:
+    except (ImportError, LanceDBStoreError):
         print(f"  Vectors: lancedb not installed")
+    finally:
+        if lancedb:
+            lancedb.close()
 
     sqlite.close()
 
@@ -140,21 +148,42 @@ def cmd_scope(args):
 
 def cmd_init(args):
     project = Path.cwd()
-    result = init_vault(project, scope=args.scope)
+    try:
+        result = init_vault(project, scope=args.scope)
+    except VaultAlreadyExistsError as e:
+        print(f"Vault already exists: {e}")
+        return
 
-    if result["status"] == "already_exists":
-        print(f"Vault already exists: {result['vault']}")
+    print(f"Initialized synapse vault:")
+    print(f"  Vault:     {result['vault']}")
+    print(f"  Database:  {result['vault_db']}")
+    print(f"  Vectors:   {result['vectors']}")
+    print(f"  Config:    {result['config']}")
+    print(f"  Gitignore: {result['gitignore']}")
+
+
+def cmd_rebuild(args):
+    from synapse.ingest.rebuild import rebuild_vault
+    project = Path.cwd()
+    result = rebuild_vault(project, scope=args.scope, backup=not args.no_backup)
+    if result["status"] == "success":
+        print(f"Rebuilt vault:")
+        print(f"  Files processed: {result['files_processed']}")
+        print(f"  Documents indexed: {result['documents_indexed']}")
+        print(f"  Vectors indexed: {result['vectors_indexed']}")
+        if result["errors"]:
+            print(f"  Errors: {len(result['errors'])}")
+            for err in result["errors"][:5]:
+                print(f"    {err}")
     else:
-        print(f"Initialized synapse vault:")
-        print(f"  Vault:     {result['vault']}")
-        print(f"  Database:  {result['vault_db']}")
-        print(f"  Vectors:   {result['vectors']}")
-        print(f"  Config:    {result['config']}")
-        print(f"  Gitignore: {result['gitignore']}")
+        print(f"Rebuild failed: {result.get('error', 'unknown')}", file=sys.stderr)
+        sys.exit(1)
 
 
 def main():
     parser = argparse.ArgumentParser(prog="synapse", description="Synapse — Hybrid Knowledge Framework")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose (INFO) logging")
+
     sub = parser.add_subparsers(dest="command")
 
     # push
@@ -184,12 +213,32 @@ def main():
 
     # init
     p_init = sub.add_parser("init", help="Initialize .synapse/ vault in current project")
-    p_init.add_argument("--scope", help="Default scope for this project (e.g. emily-oracle)")
+    p_init.add_argument("--scope", help="Default scope for this project")
     p_init.set_defaults(func=cmd_init)
 
+    # rebuild
+    p_rebuild = sub.add_parser("rebuild", help="Rebuild vault indexes from source files")
+    p_rebuild.add_argument("--scope", help="Only rebuild a specific scope")
+    p_rebuild.add_argument("--no-backup", action="store_true", help="Skip vault.db backup before rebuild")
+    p_rebuild.set_defaults(func=cmd_rebuild)
+
     args = parser.parse_args()
+
+    if args.verbose:
+        setup_logging("INFO")
+
     if hasattr(args, "func"):
-        args.func(args)
+        try:
+            args.func(args)
+        except SynapseError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        except KeyboardInterrupt:
+            sys.exit(130)
+        except Exception as e:
+            log.exception("Unexpected error")
+            print(f"Unexpected error: {e}", file=sys.stderr)
+            sys.exit(2)
     else:
         parser.print_help()
 

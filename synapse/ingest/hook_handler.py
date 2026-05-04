@@ -1,13 +1,19 @@
 """Hook handler — auto-push on file writes
 
-PostToolUse hook for Claude Code: auto-index ψ/memory/learnings/ writes
+PostToolUse hook for Claude Code: auto-index knowledge directory writes
 """
 
 import json
+import logging
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
+
+from synapse.exceptions import ScopeError
+
+log = logging.getLogger("synapse.ingest.hook")
 
 
 def should_process(file_path: str) -> bool:
@@ -15,23 +21,28 @@ def should_process(file_path: str) -> bool:
     if not file_path:
         return False
 
-    # Only process learning files
+    # Only process knowledge files
     triggers = [
         "/memory/learnings/",
         "/memory/retrospectives/",
-        "/ψ/memory/learnings/",
-        "/ψ/memory/retrospectives/",
+        "/learnings/",
+        "/retrospectives/",
     ]
 
     return any(t in file_path for t in triggers) and file_path.endswith(".md")
 
 
 def detect_scope(file_path: str) -> str:
-    """Auto-detect scope from file path."""
-    # Common oracle project patterns
-    for name in ["emily-oracle", "ai-server", "mt5-trading", "god-port-oracle", "mawui-oracle", "synapse"]:
-        if name in file_path:
-            return name
+    """Auto-detect scope from file path using project directory patterns.
+
+    Uses the same PROJECT_PATTERNS as scope/manager.py.
+    """
+    from synapse.scope.manager import PROJECT_PATTERNS
+
+    for pattern in PROJECT_PATTERNS:
+        match = pattern.search(file_path)
+        if match:
+            return match.group(1)
     return "shared"
 
 
@@ -71,6 +82,8 @@ def process_file(file_path: str) -> dict:
         else:
             return {"status": "error", "path": file_path, "error": result.stderr[:200]}
 
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "path": file_path, "error": "push command timed out"}
     except Exception as e:
         return {"status": "error", "path": file_path, "error": str(e)[:200]}
 

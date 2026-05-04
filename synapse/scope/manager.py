@@ -3,20 +3,19 @@
 Inspired by: MemPalace (wing/room), arra-oracle (project field)
 """
 
+import logging
 import re
 from pathlib import Path
 from typing import Optional
 
+from synapse.exceptions import ScopeError
+
+log = logging.getLogger("synapse.scope.manager")
 
 # Known project patterns in file paths
 PROJECT_PATTERNS = [
-    re.compile(r"/(emily-oracle)/"),
-    re.compile(r"/(ai-server)/"),
-    re.compile(r"/(mt5-trading)/"),
-    re.compile(r"/(god-port-oracle)/"),
-    re.compile(r"/(mawui-oracle)/"),
-    re.compile(r"/(synapse)/"),
     re.compile(r"/github\.com/[^/]+/([^/]+)/"),
+    re.compile(r"/Code/([^/]+)/"),
 ]
 
 
@@ -30,7 +29,7 @@ def detect_scope(file_path: str) -> str:
         if match:
             return match.group(1)
 
-    if "ψ/memory/learnings/" in file_path or "memory/learnings/" in file_path:
+    if "memory/learnings/" in file_path or "learnings/" in file_path:
         parent = Path(file_path).parent
         for part in parent.parts:
             for pat in PROJECT_PATTERNS:
@@ -59,7 +58,7 @@ class ScopeManager:
         """Resolve scope: explicit > auto-detect > shared."""
         if explicit_scope:
             if not validate_scope(explicit_scope):
-                raise ValueError(f"Invalid scope name: {explicit_scope}")
+                raise ScopeError(f"Invalid scope name: {explicit_scope}")
             return explicit_scope
 
         if file_path:

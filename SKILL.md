@@ -8,23 +8,23 @@
 Synapse is **Stage 2** retrieval — consulted after primary context is exhausted:
 
 ```
-Stage 1 (อ่านก่อน — อยู่ใน context แล้ว)
+Stage 1 (read first — already in context)
 ├── CLAUDE.md                          ← rules, identity
 ├── .claude/docs/                      ← project docs
-└── ψ/ (psi vault) ถ้ามี               ← learnings, retros, handoffs
+└── project knowledge files            ← learnings, retros, handoffs
 
-Stage 2 (ค้นหาเมื่อ Stage 1 ไม่พอ)
-└── .synapse/ (database vault)          ← hybrid search เจาะจง
+Stage 2 (search when Stage 1 is not enough)
+└── .synapse/ (database vault)         ← targeted hybrid search
 ```
 
-Projects without ψ/ vault still have Stage 1 (CLAUDE.md + .claude/docs),
+Projects without a knowledge vault still have Stage 1 (CLAUDE.md + .claude/docs),
 then synapse supplements when specific knowledge is needed.
 
 ## Commands
 
 ```
 /synapse init                    # สร้าง .synapse/ vault ใน project ใหม่
-/synapse init --scope ai-server  # สร้างพร้อมกำหนด scope เริ่มต้น
+/synapse init --scope my-project # สร้างพร้อมกำหนด scope เริ่มต้น
 
 /synapse push <file_or_text>     # เพิ่มความรู้เข้า vault (ไฟล์ path ไหนก็ได้ หรือ text paste)
 /synapse push --scope shared     # เพิ่มเข้า shared scope
@@ -37,20 +37,19 @@ then synapse supplements when specific knowledge is needed.
 
 /synapse status                   # ดู vault stats (docs, scopes, vectors)
 /synapse scope                    # ลิสต์ scopes ทั้งหมด
-/synapse rebuild                  # สร้าง indexes ใหม่
 ```
 
 ## Architecture
 
 ```
-.synapse/                   ← Database vault (แยกจาก ψ/)
+.synapse/                   ← Database vault
 ├── vault.db                ← SQLite (FTS5 + metadata + scope)
 ├── vectors/                ← LanceDB (dense vectors, local files)
 └── config.yaml             ← Scope, models, retrieval settings
 
-ψ/                          ← Source of truth (มนุษย์อ่าน)
-├── memory/learnings/       ← เข้า synapse อัตโนมัติ (PostToolUse hook)
-└── memory/retrospectives/  ← เข้า synapse อัตโนมัติ (PostToolUse hook)
+Source files/               ← Human-readable knowledge
+├── learnings/              ← auto-indexed via PostToolUse hook
+└── retrospectives/         ← auto-indexed via PostToolUse hook
 
 Store:
 ├── LanceDB (dense vectors)     ← semantic search (nomic-embed-text 768-dim)
@@ -59,32 +58,32 @@ Store:
 
 Ingest:
 ├── /synapse push              ← manual (ไฟล์จากที่ไหนก็ได้ หรือ text paste)
-├── PostToolUse hook            ← auto (ψ/memory/learnings/ + retrospectives/)
+├── PostToolUse hook            ← auto (learnings/ + retrospectives/)
 └── /rrr integration            ← semi-auto
 
 Retrieve:
 ├── Hybrid search (dense + FTS5 → RRF)
 ├── Scope filtering (shared / project)
-└── Priority: Stage 2 (after CLAUDE.md, .claude/docs, ψ/)
+└── Priority: Stage 2 (after CLAUDE.md, .claude/docs, project knowledge)
 ```
 
-## ψ/ vs .synapse/
+## Source Files vs .synapse/
 
-| | ψ/ (psi) | .synapse/ (vault) |
+| | Source files | .synapse/ (vault) |
 |---|---|---|
-| **คือ** | Oracle brain — ไฟล์ markdown | Database vault — SQLite + LanceDB |
-| **เก็บ** | learnings, retros, inbox, drafts | vault.db + vectors/ |
+| **คือ** | Knowledge base — markdown files | Database vault — SQLite + LanceDB |
+| **เก็บ** | learnings, retros, drafts | vault.db + vectors/ |
 | **ใครอ่าน** | มนุษย์, Claude (Read) | synapse search, MCP tools |
 | **format** | .md (มนุษย์อ่านได้) | binary DB + vector index |
-| **commit** | ไม่ commit | ไม่ commit (.gitignore) |
+| **commit** | yes | ไม่ commit (.gitignore) |
 
-ψ/ = source of truth, .synapse/ = search index
+Source files = human-readable truth, .synapse/ = search index
 
 ## Scope
 
 Every document has a scope:
 - `shared` — knowledge all projects use (docker patterns, security, etc.)
-- `<project-name>` — project-specific (emily-oracle, ai-server, etc.)
+- `<project-name>` — project-specific (my-project, another-project, etc.)
 
 Scope is auto-detected from file path or explicitly set via --scope.
 
@@ -105,5 +104,5 @@ Available in Claude Code (no `/synapse` prefix needed):
 ## Auto (Hook)
 
 PostToolUse Write/Edit triggers auto-index when writing to:
-- `*/memory/learnings/*.md`
-- `*/memory/retrospectives/*.md`
+- `*/learnings/*.md`
+- `*/retrospectives/*.md`

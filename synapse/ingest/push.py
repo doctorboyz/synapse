@@ -4,12 +4,16 @@ Inspired by: MemPalace (zero-LLM write), OpenKB (hash dedup)
 """
 
 import json
+import logging
 from pathlib import Path
 from typing import Optional
 
 from synapse.store.sqlite_store import SQLiteStore
 from synapse.store.lancedb_store import LanceDBStore
 from synapse.scope.manager import ScopeManager, detect_scope
+from synapse.exceptions import SQLiteStoreError, LanceDBStoreError, EmbeddingError
+
+log = logging.getLogger("synapse.ingest.push")
 
 
 class Push:
@@ -47,17 +51,20 @@ class Push:
         resolved_scope = self.scope_mgr.resolve_scope(source_file, scope)
 
         # SQLite first (fast, dedup)
-        doc_id = self.sqlite.add(
-            title=title,
-            content=content,
-            scope=resolved_scope,
-            doc_type=doc_type,
-            source_file=source_file,
-            concepts=concepts,
-        )
+        try:
+            doc_id = self.sqlite.add(
+                title=title,
+                content=content,
+                scope=resolved_scope,
+                doc_type=doc_type,
+                source_file=source_file,
+                concepts=concepts,
+            )
+        except SQLiteStoreError:
+            raise
 
         # LanceDB (slower, embed)
-        if embed:
+        if embed and self.lancedb:
             try:
                 self.lancedb.add(
                     doc_id=doc_id,
@@ -67,7 +74,7 @@ class Push:
                     doc_type=doc_type,
                     source_file=source_file,
                 )
-            except Exception as e:
+            except (LanceDBStoreError, EmbeddingError) as e:
                 return {"doc_id": doc_id, "scope": resolved_scope, "status": f"indexed_sqlite_only: {e}"}
 
         return {"doc_id": doc_id, "scope": resolved_scope, "status": "indexed"}

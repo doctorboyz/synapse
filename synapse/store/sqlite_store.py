@@ -4,12 +4,18 @@ Inspired by: arra-oracle (supersession), MemPalace (wing/room scope)
 """
 
 import json
+import logging
+import re
 import sqlite3
 import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from uuid import uuid4
+
+from synapse.exceptions import SQLiteStoreError
+
+log = logging.getLogger("synapse.store.sqlite")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS knowledge_documents (
@@ -59,9 +65,12 @@ class SQLiteStore:
     def __init__(self, vault_path: Path):
         self.db_path = vault_path / "vault.db"
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self.db_path))
-        self._conn.row_factory = sqlite3.Row
-        self._conn.executescript(SCHEMA)
+        try:
+            self._conn = sqlite3.connect(str(self.db_path))
+            self._conn.row_factory = sqlite3.Row
+            self._conn.executescript(SCHEMA)
+        except sqlite3.Error as e:
+            raise SQLiteStoreError(f"Failed to initialize vault database: {e}") from e
 
     def _content_hash(self, content: str) -> str:
         return hashlib.sha256(content.encode()).hexdigest()[:16]
@@ -86,36 +95,51 @@ class SQLiteStore:
             (content_hash,),
         ).fetchone()
         if existing:
+            log.debug("Dedup: content hash %s already exists as %s", content_hash, existing["id"])
             return existing["id"]
 
         doc_id = str(uuid4())
         now = self._now()
         concepts_json = json.dumps(concepts or [])
 
-        self._conn.execute(
-            """INSERT INTO knowledge_documents
-            (id, title, content, content_hash, scope, doc_type, source_file, concepts, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (doc_id, title, content, content_hash, scope, doc_type, source_file, concepts_json, now),
-        )
+        try:
+            self._conn.execute(
+                """INSERT INTO knowledge_documents
+                (id, title, content, content_hash, scope, doc_type, source_file, concepts, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (doc_id, title, content, content_hash, scope, doc_type, source_file, concepts_json, now),
+            )
 
-        self._conn.execute(
-            """INSERT INTO knowledge_fts (rowid, title, content, scope, doc_type)
-            VALUES (?, ?, ?, ?, ?)""",
-            (self._conn.execute("SELECT last_insert_rowid()").fetchone()[0], title, content, scope, doc_type),
-        )
+            self._conn.execute(
+                """INSERT INTO knowledge_fts (rowid, title, content, scope, doc_type)
+                VALUES (?, ?, ?, ?, ?)""",
+                (self._conn.execute("SELECT last_insert_rowid()").fetchone()[0], title, content, scope, doc_type),
+            )
 
-        self._update_scope_count(scope, delta=1)
-        self._conn.commit()
+            self._update_scope_count(scope, delta=1)
+            self._conn.commit()
+            log.info("Added document %s (%s/%s)", doc_id[:8], scope, doc_type)
+        except sqlite3.Error as e:
+            self._conn.rollback()
+            raise SQLiteStoreError(f"Failed to add document: {e}") from e
+
         return doc_id
 
-    def supersede(self, old_id: str, new_content: str, reason: str = "updated") -> str:
+    def supersede(self, old_id: str, new_content: str, reason: str = "updated", lancedb=None) -> str:
         """Supersede a document (never delete). Returns new doc ID."""
+        from synapse.exceptions import LanceDBStoreError
+
         old = self._conn.execute(
             "SELECT * FROM knowledge_documents WHERE id = ?", (old_id,)
         ).fetchone()
         if not old:
-            raise ValueError(f"Document {old_id} not found")
+            raise SQLiteStoreError(f"Document {old_id} not found")
+
+        # Skip if content unchanged (prevents self-referencing)
+        new_hash = self._content_hash(new_content)
+        if new_hash == old["content_hash"]:
+            log.debug("Supersede skipped: content unchanged for %s", old_id)
+            return old_id
 
         new_id = self.add(
             title=old["title"],
@@ -126,16 +150,47 @@ class SQLiteStore:
             concepts=json.loads(old["concepts"]) if old["concepts"] else None,
         )
 
-        now = self._now()
-        self._conn.execute(
-            "UPDATE knowledge_documents SET superseded_by = ?, updated_at = ? WHERE id = ?",
-            (new_id, now, old_id),
-        )
-        self._conn.execute(
-            "INSERT INTO supersede_log (id, old_id, new_id, reason, timestamp) VALUES (?, ?, ?, ?, ?)",
-            (str(uuid4()), old_id, new_id, reason, now),
-        )
-        self._conn.commit()
+        try:
+            now = self._now()
+            self._conn.execute(
+                "UPDATE knowledge_documents SET superseded_by = ?, updated_at = ? WHERE id = ?",
+                (new_id, now, old_id),
+            )
+            self._conn.execute(
+                "INSERT INTO supersede_log (id, old_id, new_id, reason, timestamp) VALUES (?, ?, ?, ?, ?)",
+                (str(uuid4()), old_id, new_id, reason, now),
+            )
+
+            # Remove stale FTS entry for superseded doc
+            old_rowid = self._conn.execute(
+                "SELECT rowid FROM knowledge_documents WHERE id = ?", (old_id,)
+            ).fetchone()
+            if old_rowid:
+                self._conn.execute("DELETE FROM knowledge_fts WHERE rowid = ?", (old_rowid[0],))
+
+            # Decrement old scope count
+            self._update_scope_count(old["scope"], delta=-1)
+
+            self._conn.commit()
+        except sqlite3.Error as e:
+            self._conn.rollback()
+            raise SQLiteStoreError(f"Failed to supersede document {old_id}: {e}") from e
+
+        # Sync LanceDB vectors if available
+        if lancedb:
+            try:
+                lancedb.add(
+                    doc_id=new_id,
+                    title=old["title"],
+                    content=new_content,
+                    scope=old["scope"],
+                    doc_type=old["doc_type"],
+                    source_file=old["source_file"],
+                )
+            except LanceDBStoreError as e:
+                log.warning("Failed to sync LanceDB vectors for superseded doc %s: %s", old_id, e)
+
+        log.info("Superseded %s → %s", old_id[:8], new_id[:8])
         return new_id
 
     def search_fts5(self, query: str, scope: Optional[str] = None, limit: int = 20) -> list[dict]:
@@ -144,24 +199,27 @@ class SQLiteStore:
         if not clean_query:
             return []
 
-        if scope:
-            sql = """
-                SELECT d.id, d.title, d.scope, d.doc_type, f.rank
-                FROM knowledge_fts f
-                JOIN knowledge_documents d ON d.rowid = f.rowid
-                WHERE knowledge_fts MATCH ? AND d.scope = ? AND d.superseded_by IS NULL
-                ORDER BY f.rank LIMIT ?
-            """
-            rows = self._conn.execute(sql, (clean_query, scope, limit)).fetchall()
-        else:
-            sql = """
-                SELECT d.id, d.title, d.scope, d.doc_type, f.rank
-                FROM knowledge_fts f
-                JOIN knowledge_documents d ON d.rowid = f.rowid
-                WHERE knowledge_fts MATCH ? AND d.superseded_by IS NULL
-                ORDER BY f.rank LIMIT ?
-            """
-            rows = self._conn.execute(sql, (clean_query, limit)).fetchall()
+        try:
+            if scope:
+                sql = """
+                    SELECT d.id, d.title, d.scope, d.doc_type, f.rank
+                    FROM knowledge_fts f
+                    JOIN knowledge_documents d ON d.rowid = f.rowid
+                    WHERE knowledge_fts MATCH ? AND d.scope = ? AND d.superseded_by IS NULL
+                    ORDER BY f.rank LIMIT ?
+                """
+                rows = self._conn.execute(sql, (clean_query, scope, limit)).fetchall()
+            else:
+                sql = """
+                    SELECT d.id, d.title, d.scope, d.doc_type, f.rank
+                    FROM knowledge_fts f
+                    JOIN knowledge_documents d ON d.rowid = f.rowid
+                    WHERE knowledge_fts MATCH ? AND d.superseded_by IS NULL
+                    ORDER BY f.rank LIMIT ?
+                """
+                rows = self._conn.execute(sql, (clean_query, limit)).fetchall()
+        except sqlite3.Error as e:
+            raise SQLiteStoreError(f"FTS5 search failed: {e}") from e
 
         return [
             {
@@ -216,7 +274,6 @@ class SQLiteStore:
 
     def _sanitize_fts(self, query: str) -> str:
         """Sanitize query for FTS5."""
-        import re
         clean = re.sub(r'[^\w\s]', ' ', query)
         tokens = clean.split()
         return " OR ".join(f"\"{t}\"" for t in tokens if len(t) >= 2) if tokens else ""

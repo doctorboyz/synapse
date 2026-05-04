@@ -3,11 +3,15 @@
 Inspired by: SocratiCode (RRF), MemPalace (hybrid weights)
 """
 
+import logging
 import math
 from typing import Optional
 
 from synapse.store.sqlite_store import SQLiteStore
 from synapse.store.lancedb_store import LanceDBStore
+from synapse.exceptions import SearchError, EmbeddingError, StoreError
+
+log = logging.getLogger("synapse.retrieve.hybrid")
 
 
 def reciprocal_rank_fusion(
@@ -68,7 +72,7 @@ def normalize_fts_rank(rank: float) -> float:
 class HybridSearch:
     """Hybrid search combining dense vectors + FTS5 keyword search via RRF."""
 
-    def __init__(self, sqlite: SQLiteStore, lancedb: LanceDBStore):
+    def __init__(self, sqlite: SQLiteStore, lancedb: Optional[LanceDBStore] = None):
         self.sqlite = sqlite
         self.lancedb = lancedb
 
@@ -93,13 +97,22 @@ class HybridSearch:
             List of {id, title, scope, doc_type, score}
         """
         if mode == "dense":
+            if self.lancedb is None:
+                raise SearchError("Dense search requires LanceDB")
             return self.lancedb.search(query, scope=scope, limit=limit)
 
         if mode == "fts":
             return self._search_fts(query, scope=scope, limit=limit)
 
         # Hybrid: both searches + RRF
-        dense_results = self.lancedb.search(query, scope=scope, limit=limit * 2)
+        if self.lancedb is None:
+            return self._search_fts(query, scope=scope, limit=limit)
+
+        try:
+            dense_results = self.lancedb.search(query, scope=scope, limit=limit * 2)
+        except (EmbeddingError, StoreError) as e:
+            log.warning("Dense search failed, falling back to FTS-only: %s", e)
+            return self._search_fts(query, scope=scope, limit=limit)
         fts_results = self._search_fts(query, scope=scope, limit=limit * 2)
 
         if not dense_results and not fts_results:
