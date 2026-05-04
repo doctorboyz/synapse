@@ -1,0 +1,1 @@
+"""Synapse daemon — persistent service mode for cross-project knowledge."""

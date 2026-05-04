@@ -2,9 +2,11 @@
 
 Uses MCP SDK for proper stdio transport.
 Exposes: synapse_search, synapse_push, synapse_scope, synapse_status,
-         synapse_init, synapse_rebuild
+         synapse_init, synapse_rebuild, synapse_projects, synapse_register,
+         synapse_unregister, synapse_health, synapse_search_cross
 """
 
+import json
 import logging
 from pathlib import Path
 
@@ -124,6 +126,51 @@ async def list_tools() -> list[Tool]:
                 },
             },
         ),
+        Tool(
+            name="synapse_projects",
+            description="List registered projects and their scopes in the shared vault",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="synapse_register",
+            description="Register current project with the shared vault",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "scope": {"type": "string", "description": "Scope name (auto-detected if omitted)"},
+                },
+            },
+        ),
+        Tool(
+            name="synapse_unregister",
+            description="Remove project registration from the shared vault",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "scope": {"type": "string", "description": "Scope to unregister"},
+                },
+                "required": ["scope"],
+            },
+        ),
+        Tool(
+            name="synapse_health",
+            description="Check daemon health: uptime, vault stats, embedding availability",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="synapse_search_cross",
+            description="Cross-project search across multiple scopes in shared vault",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "scopes": {"type": "array", "items": {"type": "string"}, "description": "Scopes to search across"},
+                    "limit": {"type": "integer", "description": "Max results", "default": 10},
+                    "mode": {"type": "string", "enum": ["hybrid", "dense", "fts"], "default": "hybrid"},
+                },
+                "required": ["query", "scopes"],
+            },
+        ),
     ]
 
 
@@ -192,6 +239,69 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             no_backup = arguments.get("no_backup", False)
             result = rebuild_vault(Path.cwd(), scope=scope, backup=not no_backup)
             return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
+
+        if name == "synapse_projects":
+            from synapse.daemon.registry import ProjectRegistry
+            vault_path = Path.home() / ".synapse"
+            if not vault_path.exists():
+                return [TextContent(type="text", text=json.dumps({"error": "Shared vault not found. Run synapse init --shared first."}))]
+            registry = ProjectRegistry(vault_path)
+            projects = registry.list_projects()
+            return [TextContent(type="text", text=json.dumps(projects, ensure_ascii=False, indent=2))]
+
+        if name == "synapse_register":
+            from synapse.daemon.registry import ProjectRegistry
+            vault_path = Path.home() / ".synapse"
+            if not vault_path.exists():
+                return [TextContent(type="text", text=json.dumps({"error": "Shared vault not found. Run synapse init --shared first."}))]
+            registry = ProjectRegistry(vault_path)
+            scope = arguments.get("scope")
+            result = registry.register(str(Path.cwd()), scope=scope)
+            return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
+
+        if name == "synapse_unregister":
+            from synapse.daemon.registry import ProjectRegistry
+            vault_path = Path.home() / ".synapse"
+            if not vault_path.exists():
+                return [TextContent(type="text", text=json.dumps({"error": "Shared vault not found."}))]
+            registry = ProjectRegistry(vault_path)
+            scope = arguments["scope"]
+            result = registry.unregister(scope)
+            return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
+
+        if name == "synapse_health":
+            from synapse.daemon.server import DaemonServer
+            from synapse.daemon.health import HealthChecker
+            from synapse.config import Config
+            config_path = Path.home() / ".synapse" / "config.yaml"
+            if config_path.exists():
+                cfg = Config(config_path)
+                server = DaemonServer(cfg)
+                checker = HealthChecker(server)
+                result = checker.full_status()
+            else:
+                result = {"status": "no_shared_vault", "health": "unavailable"}
+            return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
+
+        if name == "synapse_search_cross":
+            sqlite, lancedb, _ = _get_stores()
+            search = HybridSearch(sqlite, lancedb) if lancedb else None
+            query = arguments["query"]
+            scopes = arguments["scopes"]
+            limit = arguments.get("limit", 10)
+            mode = arguments.get("mode", "hybrid")
+
+            if search:
+                results = search.search_cross_scope(query, scopes=scopes, limit=limit, mode=mode)
+            else:
+                # Fallback: FTS5 across each scope individually
+                results = []
+                for scope in scopes:
+                    scope_results = sqlite.search_fts5(query, scope=scope, limit=limit)
+                    results.extend(scope_results)
+                results = sorted(results, key=lambda x: x.get("score", 0))[:limit]
+
+            return [TextContent(type="text", text=json.dumps(results, ensure_ascii=False, indent=2))]
 
         return [TextContent(type="text", text=f"Unknown tool: {name}")]
 

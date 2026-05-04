@@ -50,7 +50,7 @@ def mock_embed_response(vectors=None, dim=768):
 @pytest.fixture
 def mock_ollama():
     """Mock httpx.post to simulate Ollama embedding API."""
-    with patch("synapse.store.lancedb_store.httpx.post", return_value=mock_embed_response()) as mock_post:
+    with patch("httpx.post", return_value=mock_embed_response()) as mock_post:
         yield mock_post
 
 
@@ -58,7 +58,7 @@ def mock_ollama():
 def mock_ollama_timeout():
     """Mock httpx.post to simulate Ollama timeout."""
     import httpx
-    with patch("synapse.store.lancedb_store.httpx.post", side_effect=httpx.TimeoutException("timeout")) as mock_post:
+    with patch("httpx.post", side_effect=httpx.TimeoutException("timeout")) as mock_post:
         yield mock_post
 
 
@@ -66,5 +66,5 @@ def mock_ollama_timeout():
 def mock_ollama_error():
     """Mock httpx.post to simulate Ollama HTTP error."""
     import httpx
-    with patch("synapse.store.lancedb_store.httpx.post", side_effect=httpx.HTTPError("connection failed")) as mock_post:
+    with patch("httpx.post", side_effect=httpx.HTTPError("connection failed")) as mock_post:
         yield mock_post

@@ -9,6 +9,7 @@ import re
 from pathlib import Path
 from typing import Optional
 
+from synapse.embedding import OllamaEmbedder
 from synapse.exceptions import LanceDBStoreError, EmbeddingError, ScopeError
 
 try:
@@ -17,12 +18,6 @@ try:
 except ImportError:
     HAS_LANCEDB = False
 
-try:
-    import httpx
-    HAS_HTTPX = True
-except ImportError:
-    HAS_HTTPX = False
-
 log = logging.getLogger("synapse.store.lancedb")
 
 MAX_CHUNK_CHARS = 4000
@@ -30,12 +25,13 @@ CHUNK_OVERLAP = 200
 
 
 class LanceDBStore:
-    def __init__(self, vault_path: Path, embedding_dim: int = 768):
+    def __init__(self, vault_path: Path, embedding_dim: int = 768, embedder: Optional[OllamaEmbedder] = None):
         self.vectors_path = vault_path / "vectors"
         self.vectors_path.mkdir(parents=True, exist_ok=True)
         self.embedding_dim = embedding_dim
         self._db = None
         self._table = None
+        self._embedder = embedder or OllamaEmbedder(dim=embedding_dim)
 
         if not HAS_LANCEDB:
             raise LanceDBStoreError("lancedb not installed. Run: pip install lancedb")
@@ -85,36 +81,9 @@ class LanceDBStore:
 
         return final if final else [text[:max_chars]]
 
-    def _embed_ollama(self, text: str, model: str = "nomic-embed-text") -> list[float]:
-        """Get embedding from local Ollama."""
-        if not HAS_HTTPX:
-            raise EmbeddingError("httpx not installed. Run: pip install httpx")
-
-        if len(text) > MAX_CHUNK_CHARS:
-            text = text[:MAX_CHUNK_CHARS]
-
-        try:
-            resp = httpx.post(
-                "http://localhost:11434/api/embed",
-                json={"model": model, "input": text},
-                timeout=30.0,
-            )
-        except httpx.TimeoutException as e:
-            raise EmbeddingError(f"Ollama embedding timed out: {e}") from e
-        except httpx.HTTPError as e:
-            raise EmbeddingError(f"Ollama embedding request failed: {e}") from e
-
-        if resp.status_code != 200:
-            raise EmbeddingError(f"Ollama returned status {resp.status_code}: {resp.text[:200]}")
-
-        try:
-            return resp.json()["embeddings"][0]
-        except (KeyError, IndexError) as e:
-            raise EmbeddingError(f"Unexpected Ollama response format: {e}") from e
-
-    def _embed(self, text: str, model: str = "nomic-embed-text") -> list[float]:
-        """Get embedding vector. Ollama by default."""
-        return self._embed_ollama(text, model)
+    def _embed(self, text: str) -> list[float]:
+        """Get embedding vector via OllamaEmbedder."""
+        return self._embedder.embed(text)
 
     def add(
         self,

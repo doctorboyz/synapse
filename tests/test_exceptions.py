@@ -13,6 +13,11 @@ from synapse.exceptions import (
     ScopeError,
     SearchError,
     RebuildError,
+    ConfigError,
+    DaemonError,
+    DaemonNotRunningError,
+    DaemonAlreadyRunningError,
+    ProjectRegistrationError,
 )
 
 
@@ -55,3 +60,38 @@ class TestBaseCatch:
     def test_error_message_preserved(self):
         err = ScopeError("invalid scope: BAD")
         assert str(err) == "invalid scope: BAD"
+
+
+class TestV2Hierarchy:
+    def test_config_error_inherits_synapse_error(self):
+        assert issubclass(ConfigError, SynapseError)
+
+    def test_daemon_error_inherits_synapse_error(self):
+        assert issubclass(DaemonError, SynapseError)
+
+    def test_daemon_not_running_inherits_daemon_error(self):
+        assert issubclass(DaemonNotRunningError, DaemonError)
+
+    def test_daemon_already_running_inherits_daemon_error(self):
+        assert issubclass(DaemonAlreadyRunningError, DaemonError)
+
+    def test_project_registration_error_inherits_synapse_error(self):
+        assert issubclass(ProjectRegistrationError, SynapseError)
+
+
+class TestV2Catch:
+    def test_catch_config_error_as_synapse_error(self):
+        with pytest.raises(SynapseError):
+            raise ConfigError("bad config")
+
+    def test_catch_daemon_not_running_as_daemon_error(self):
+        with pytest.raises(DaemonError):
+            raise DaemonNotRunningError("daemon not running")
+
+    def test_catch_daemon_already_running_as_daemon_error(self):
+        with pytest.raises(DaemonError):
+            raise DaemonAlreadyRunningError("pid lock collision")
+
+    def test_catch_project_registration_as_synapse_error(self):
+        with pytest.raises(SynapseError):
+            raise ProjectRegistrationError("register failed")

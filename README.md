@@ -34,9 +34,8 @@
               ┌────────┴────────┐             │         │
               │   RRF FUSION    │             │         │
               │  (60% dense     │             │         │
-              │  + 40% FTS5)    │             │         │
+              │  + 40% FTS5)   │             │         │
               └────────┬────────┘             │         │
-                       │                      │         │
                        │        ┌─────────────┴────────┐
                        │        │    SCOPE FILTER       │
                        │        │  shared / project      │
@@ -143,8 +142,6 @@ Test environment: MacBook, Ollama nomic-embed-text (768-dim), 13 documents, 23 v
 | Dense (vector only) | 0.60 (6/10) | 0.80 (8/10) |
 | **Hybrid (RRF 60/40)** | **0.80 (8/10)** | **1.00 (10/10)** |
 
-Hybrid achieves perfect R@10 — combining dense + keyword covers both semantic and exact matches.
-
 ### Query Latency
 
 | Mode | Avg latency | Notes |
@@ -153,38 +150,116 @@ Hybrid achieves perfect R@10 — combining dense + keyword covers both semantic 
 | Dense | 60.6ms | Includes Ollama embed (first query ~232ms cold) |
 | Hybrid | 50.1ms | Dense + FTS5 combined, RRF merge |
 
-First dense query is slower (Ollama model load). Subsequent queries are ~45-55ms.
+## v2 — Service Mode (Daemon, Shared Vault)
 
-### Indexing Speed
+v2 adds an optional persistent daemon that serves multiple projects from a shared vault at `~/.synapse/`.
 
-| Doc size | SQLite only | SQLite + LanceDB (with embed) |
-|----------|-------------|-------------------------------|
-| Short (39 chars) | 0.1ms | 160ms |
-| Medium (1K chars) | 0.0ms | 59ms |
-| Long (1.4K chars) | 0.0ms | 106ms |
+### v2 Architecture
 
-SQLite indexing is near-instant. Embedding cost dominates — amortized with Ollama model warm.
+```
+v1 (per-project, default when no daemon):
+  project-a/.synapse/     ← isolated vault per project
+  project-b/.synapse/
 
-### Scope Filtering
+v2 (daemon, shared vault):
+  ~/.synapse/             ← shared vault root
+    ├── vault.db          ← SQLite WAL mode (concurrent access)
+    ├── vectors/          ← LanceDB (shared)
+    ├── config.yaml       ← AUTHORITATIVE runtime config (v2 schema)
+    ├── projects.yaml     ← project registry
+    └── daemon.lock       ← PID lock
+```
 
-| Filter | Top-3 results |
-|--------|--------------|
-| scope=my-project | project-specific results |
-| scope=all (default) | all results, best match first |
+### v2 CLI Commands
 
-### Vault Stats
+```bash
+# Initialize shared vault
+synapse init --shared
 
-| Metric | Value |
-|--------|-------|
-| Documents | 13 |
-| Vectors | 23 (768-dim) |
-| Scopes | my-project: 13 docs |
-| Doc types | learning: 13 |
-| Superseded | 0 |
-| Embedding model | nomic-embed-text (Ollama, local) |
-| Chunk max | 4000 chars, 200 overlap |
+# Daemon management
+synapse serve              # Start daemon (foreground)
+synapse daemon             # Start daemon (background)
+synapse stop                # Stop daemon
 
-## Commands
+# Project registration
+synapse register --scope my-project
+synapse unregister my-project
+synapse projects            # List registered projects
+
+# Health check
+synapse health              # Daemon status, vault stats, embedding check
+
+# Cross-project search (also available via MCP)
+synapse search "pattern" --projects project-a,project-b
+```
+
+### v2 Config Schema
+
+```yaml
+version: 2
+daemon:
+  host: "127.0.0.1"
+  port: 8321
+  socket: "~/.synapse/daemon.sock"
+  pid_file: "~/.synapse/daemon.lock"
+  log_level: "INFO"
+  graceful_shutdown_timeout: 30
+
+embedding:
+  provider: "ollama"
+  model: "nomic-embed-text"
+  dim: 768
+  timeout: 30
+  base_url: "http://localhost:11434"
+  batch_size: 1
+
+search:
+  mode: "hybrid"
+  weights: {dense: 0.6, fts: 0.4}
+  cache_ttl: 300
+  cache_max_size: 1000
+
+scope:
+  default: "shared"
+  cross_project: true
+
+vault:
+  path: "~/.synapse"
+  wal_mode: true
+  busy_timeout: 5000
+
+hooks:
+  auto_index: true
+  trigger_paths: ["*/learnings/*.md", "*/retrospectives/*.md"]
+  use_daemon: true
+```
+
+### v2 MCP Tools
+
+Available in Claude Code without `/synapse` prefix:
+
+| Tool | Description |
+|------|-------------|
+| `synapse_search` | Hybrid search (add `projects` param for cross-project) |
+| `synapse_push` | Add knowledge |
+| `synapse_scope` | List scopes |
+| `synapse_status` | Vault statistics (daemon-aware) |
+| `synapse_init` | Create vault (add `shared` param for shared vault) |
+| `synapse_rebuild` | Rebuild vault indexes |
+| `synapse_projects` | List registered projects and scopes |
+| `synapse_register` | Register current project with shared vault |
+| `synapse_unregister` | Remove project registration |
+| `synapse_health` | Daemon health: uptime, vault stats, embedding |
+| `synapse_search_cross` | Cross-project search across multiple scopes |
+
+### Backward Compatibility
+
+- v1 per-project vaults work unchanged when no daemon is running
+- SQLite WAL is backward-compatible (single-connection v1 code works on WAL databases)
+- v1 config.yaml (`version: 1`) still valid — daemon merges it with v2 defaults
+- All existing CLI commands unchanged — new ones are additions
+
+## v1 Commands
 
 | Command | Description |
 |---------|-------------|
@@ -202,19 +277,6 @@ SQLite indexing is near-instant. Embedding cost dominates — amortized with Oll
 | `synapse scope` | List all scopes |
 | `synapse rebuild [--scope X] [--no-backup]` | Rebuild vault indexes from source files |
 
-## MCP Tools
-
-Available in Claude Code without `/synapse` prefix:
-
-| Tool | Description |
-|------|-------------|
-| `synapse_init` | Create vault in project |
-| `synapse_push` | Add knowledge |
-| `synapse_search` | Hybrid search |
-| `synapse_scope` | List scopes |
-| `synapse_status` | Vault statistics |
-| `synapse_rebuild` | Rebuild vault indexes from source files |
-
 ## Auto-Indexing (Hook)
 
 PostToolUse hook automatically indexes files written to knowledge directories. For example:
@@ -225,20 +287,11 @@ Scope is auto-detected from file path.
 
 ## Rebuilding Indexes
 
-If the vault becomes corrupted or indexes drift out of sync with source files:
-
 ```bash
-# Rebuild from all learnings/ and retrospectives/ files
-synapse rebuild
-
-# Rebuild only a specific scope
-synapse rebuild --scope my-project
-
-# Skip vault.db backup (faster, no safety net)
-synapse rebuild --no-backup
+synapse rebuild               # Rebuild from all source files
+synapse rebuild --scope X      # Rebuild only a specific scope
+synapse rebuild --no-backup    # Skip vault.db backup (faster)
 ```
-
-Rebuild steps: backup vault.db → delete indexes → recreate schema → discover source files → re-index. Config.yaml is preserved across rebuilds.
 
 ## Scope System
 
@@ -250,7 +303,7 @@ Scope is resolved: explicit `--scope` > auto-detect from path > default `shared`
 
 ## Supersession (Nothing is Deleted)
 
-Following arra-oracle's principle: documents are never deleted, only superseded. When a document is updated, the old version gets `superseded_by` pointing to the new version. Search results exclude superseded documents.
+Documents are never deleted, only superseded. When updated, the old version gets `superseded_by` pointing to the new version. Search results exclude superseded documents.
 
 ## Dependencies
 
@@ -266,17 +319,9 @@ Requires Ollama running locally with `nomic-embed-text` model for vector search.
 ## Testing
 
 ```bash
-# Install with dev dependencies
 pip install -e ".[dev]"
-
-# Run all tests (no Ollama required)
 pytest tests/ -v
-
-# Run with coverage
 pytest tests/ --cov=synapse --cov-report=term-missing
-
-# LanceDB-dependent tests require lancedb installed
-pip install -e ".[dev]"  # includes pytest + pytest-cov
 ```
 
 Tests mock Ollama at the `httpx.post` level, so no running Ollama server is needed.
@@ -285,7 +330,7 @@ Tests mock Ollama at the `httpx.post` level, so no running Ollama server is need
 
 - **v1** — Local skill (SQLite + LanceDB, CLI, MCP, hooks) ✅
 - **v1.1** — Tests, rebuild command, custom exceptions, better error handling ✅
-- **v2** — Service mode (MCP server as daemon, cross-project shared vault)
+- **v2** — Service mode (MCP daemon, cross-project shared vault, async embedding, cache) ✅
 - **v3** — Platform (Qdrant/Postgres options, API, multi-user)
 
 ## Credit

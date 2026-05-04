@@ -54,3 +54,28 @@ class SearchError(SynapseError):
 class RebuildError(SynapseError):
     """Rebuild operation failure (backup, schema drop, re-index)."""
     pass
+
+
+class ConfigError(SynapseError):
+    """Configuration validation or loading error."""
+    pass
+
+
+class DaemonError(SynapseError):
+    """Base exception for daemon-related errors."""
+    pass
+
+
+class DaemonNotRunningError(DaemonError):
+    """Daemon is not running when expected."""
+    pass
+
+
+class DaemonAlreadyRunningError(DaemonError):
+    """Daemon is already running (PID lock collision)."""
+    pass
+
+
+class ProjectRegistrationError(SynapseError):
+    """Project registration or unregistration failure."""
+    pass

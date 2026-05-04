@@ -62,12 +62,16 @@ CREATE TABLE IF NOT EXISTS scope_registry (
 
 
 class SQLiteStore:
-    def __init__(self, vault_path: Path):
+    def __init__(self, vault_path: Path, wal_mode: bool = True):
         self.db_path = vault_path / "vault.db"
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             self._conn = sqlite3.connect(str(self.db_path))
             self._conn.row_factory = sqlite3.Row
+            if wal_mode:
+                self._conn.execute("PRAGMA journal_mode=WAL")
+                self._conn.execute("PRAGMA synchronous=NORMAL")
+                self._conn.execute("PRAGMA busy_timeout=5000")
             self._conn.executescript(SCHEMA)
         except sqlite3.Error as e:
             raise SQLiteStoreError(f"Failed to initialize vault database: {e}") from e

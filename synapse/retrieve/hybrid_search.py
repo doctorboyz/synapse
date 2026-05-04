@@ -7,6 +7,7 @@ import logging
 import math
 from typing import Optional
 
+from synapse.cache import SearchCache
 from synapse.store.sqlite_store import SQLiteStore
 from synapse.store.lancedb_store import LanceDBStore
 from synapse.exceptions import SearchError, EmbeddingError, StoreError
@@ -72,9 +73,11 @@ def normalize_fts_rank(rank: float) -> float:
 class HybridSearch:
     """Hybrid search combining dense vectors + FTS5 keyword search via RRF."""
 
-    def __init__(self, sqlite: SQLiteStore, lancedb: Optional[LanceDBStore] = None):
+    def __init__(self, sqlite: SQLiteStore, lancedb: Optional[LanceDBStore] = None,
+                 cache_ttl: int = 300, cache_max_size: int = 1000):
         self.sqlite = sqlite
         self.lancedb = lancedb
+        self._cache = SearchCache(max_size=cache_max_size, ttl=cache_ttl)
 
     def search(
         self,
@@ -104,9 +107,17 @@ class HybridSearch:
         if mode == "fts":
             return self._search_fts(query, scope=scope, limit=limit)
 
+        # Check cache
+        cached = self._cache.get(query, scope=scope, mode=mode, limit=limit)
+        if cached is not None:
+            log.debug("Cache hit for query: %s", query[:50])
+            return cached
+
         # Hybrid: both searches + RRF
         if self.lancedb is None:
-            return self._search_fts(query, scope=scope, limit=limit)
+            results = self._search_fts(query, scope=scope, limit=limit)
+            self._cache.put(query, results, scope=scope, mode=mode, limit=limit)
+            return results
 
         try:
             dense_results = self.lancedb.search(query, scope=scope, limit=limit * 2)
@@ -133,7 +144,9 @@ class HybridSearch:
             weights=weights,
         )
 
-        return merged[:limit]
+        result = merged[:limit]
+        self._cache.put(query, result, scope=scope, mode=mode, limit=limit)
+        return result
 
     def _search_fts(self, query: str, scope: Optional[str], limit: int) -> list[dict]:
         """FTS5 search with normalized scores."""
@@ -141,3 +154,35 @@ class HybridSearch:
         for r in raw:
             r["score"] = normalize_fts_rank(r["score"])
         return raw
+
+    def search_cross_scope(
+        self,
+        query: str,
+        scopes: list[str],
+        limit: int = 10,
+        mode: str = "hybrid",
+        weights: Optional[list[float]] = None,
+    ) -> list[dict]:
+        """Search across multiple scopes, merging results.
+
+        Args:
+            query: Search query
+            scopes: List of scopes to search across
+            limit: Max results
+            mode: 'hybrid', 'dense', or 'fts'
+            weights: [dense_weight, fts_weight] for hybrid mode
+
+        Returns:
+            Merged results from all scopes, sorted by score.
+        """
+        all_results: dict[str, dict] = {}
+
+        for scope in scopes:
+            results = self.search(query, scope=scope, limit=limit * 2, mode=mode, weights=weights)
+            for r in results:
+                doc_id = r["id"]
+                if doc_id not in all_results or r["score"] > all_results[doc_id]["score"]:
+                    all_results[doc_id] = r
+
+        sorted_results = sorted(all_results.values(), key=lambda x: -x["score"])
+        return sorted_results[:limit]

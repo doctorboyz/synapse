@@ -74,3 +74,8 @@ class ScopeManager:
             "scope": scope,
             "document_count": scope_count,
         }
+
+    def list_all_scopes(self) -> list[str]:
+        """List all scope names in the vault."""
+        scopes = self.sqlite.list_scopes()
+        return [s["name"] for s in scopes]

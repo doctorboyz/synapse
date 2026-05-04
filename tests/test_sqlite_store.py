@@ -124,6 +124,32 @@ class TestSanitizeFts:
         assert result == ""
 
 
+class TestWalMode:
+    def test_wal_mode_enabled_by_default(self, tmp_vault):
+        store = SQLiteStore(tmp_vault, wal_mode=True)
+        result = store._conn.execute("PRAGMA journal_mode").fetchone()
+        assert result[0].lower() == "wal"
+        store.close()
+
+    def test_wal_mode_disabled(self, tmp_vault):
+        store = SQLiteStore(tmp_vault, wal_mode=False)
+        result = store._conn.execute("PRAGMA journal_mode").fetchone()
+        assert result[0].lower() != "wal"
+        store.close()
+
+    def test_wal_busy_timeout_set(self, tmp_vault):
+        store = SQLiteStore(tmp_vault, wal_mode=True)
+        result = store._conn.execute("PRAGMA busy_timeout").fetchone()
+        assert result[0] == 5000
+        store.close()
+
+    def test_wal_synchronous_normal(self, tmp_vault):
+        store = SQLiteStore(tmp_vault, wal_mode=True)
+        result = store._conn.execute("PRAGMA synchronous").fetchone()
+        assert result[0] == 1  # NORMAL = 1
+        store.close()
+
+
 class TestGet:
     def test_get_existing_doc(self, sqlite_store):
         doc_id = sqlite_store.add("Title", "Content")
