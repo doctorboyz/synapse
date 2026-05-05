@@ -7,7 +7,7 @@ from src.db.pg_store import PgStore
 from src.db.qdrant_store import QdrantStore
 from src.embed.ollama import OllamaEmbedder, EmbeddingError
 
-log = logging.getLogger("mysynapse.retrieve.hybrid")
+log = logging.getLogger("synapse.retrieve.hybrid")
 
 
 def reciprocal_rank_fusion(

@@ -1,7 +1,7 @@
-"""PostToolUse hook handler — auto-ingest oracle brain files into mysynapse.
+"""PostToolUse hook handler — auto-ingest oracle brain files into synapse.
 
 Called by Claude Code hooks after Write/Edit on files under κ/ or ψ/ paths.
-Detects oracle metadata from the file path and pushes to mysynapse.
+Detects oracle metadata from the file path and pushes to synapse.
 """
 
 import asyncio
@@ -34,7 +34,7 @@ def find_oracle_root(file_path: str) -> str | None:
 
 
 async def ingest_file(file_path: str):
-    """Ingest a single file into mysynapse via push pipeline."""
+    """Ingest a single file into synapse via push pipeline."""
     path = Path(file_path)
     if not path.exists() or not path.is_file():
         print(f"hook_handler: file not found: {file_path}", file=sys.stderr)

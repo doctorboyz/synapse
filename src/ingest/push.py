@@ -10,7 +10,7 @@ from src.db.qdrant_store import QdrantStore
 from src.embed.ollama import OllamaEmbedder
 from src.ingest.oracle_paths import extract_metadata, validate_doc_type
 
-log = logging.getLogger("mysynapse.ingest.push")
+log = logging.getLogger("synapse.ingest.push")
 
 
 class Push:

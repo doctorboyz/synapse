@@ -1,4 +1,4 @@
-"""Oracle path mapping — kappa/psi brain structure to mysynapse metadata."""
+"""Oracle path mapping — kappa/psi brain structure to synapse metadata."""
 
 import re
 from pathlib import Path

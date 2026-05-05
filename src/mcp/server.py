@@ -16,11 +16,11 @@ from src.ingest.push import Push
 from src.ingest.oracle_paths import validate_doc_type, validate_trace_relation
 from src.retrieve.hybrid_search import HybridSearch
 
-log = logging.getLogger("mysynapse.mcp")
+log = logging.getLogger("synapse.mcp")
 
 TOOL_DEFINITIONS = [
     Tool(
-        name="mysynapse_search",
+        name="synapse_search",
         description="Search knowledge vault with hybrid dense+keyword search. Returns ranked results with metadata.",
         inputSchema={
             "type": "object",
@@ -38,7 +38,7 @@ TOOL_DEFINITIONS = [
         },
     ),
     Tool(
-        name="mysynapse_push",
+        name="synapse_push",
         description="Add knowledge to the vault. Auto-detects oracle metadata from source_file path.",
         inputSchema={
             "type": "object",
@@ -60,7 +60,7 @@ TOOL_DEFINITIONS = [
         },
     ),
     Tool(
-        name="mysynapse_supersede",
+        name="synapse_supersede",
         description="Supersede a document with updated knowledge. Old doc never deleted — marked superseded_by.",
         inputSchema={
             "type": "object",
@@ -74,7 +74,7 @@ TOOL_DEFINITIONS = [
         },
     ),
     Tool(
-        name="mysynapse_trace",
+        name="synapse_trace",
         description="Create a trace link between two knowledge documents.",
         inputSchema={
             "type": "object",
@@ -88,7 +88,7 @@ TOOL_DEFINITIONS = [
         },
     ),
     Tool(
-        name="mysynapse_trace_chain",
+        name="synapse_trace_chain",
         description="Follow trace chain from a document. Returns all linked documents.",
         inputSchema={
             "type": "object",
@@ -102,7 +102,7 @@ TOOL_DEFINITIONS = [
         },
     ),
     Tool(
-        name="mysynapse_concepts",
+        name="synapse_concepts",
         description="List or search concepts across the knowledge vault.",
         inputSchema={
             "type": "object",
@@ -113,7 +113,7 @@ TOOL_DEFINITIONS = [
         },
     ),
     Tool(
-        name="mysynapse_get",
+        name="synapse_get",
         description="Retrieve a full knowledge document by ID, including supersession history.",
         inputSchema={
             "type": "object",
@@ -125,17 +125,17 @@ TOOL_DEFINITIONS = [
         },
     ),
     Tool(
-        name="mysynapse_scope",
+        name="synapse_scope",
         description="List all knowledge scopes with document counts.",
         inputSchema={"type": "object", "properties": {}},
     ),
     Tool(
-        name="mysynapse_stats",
+        name="synapse_stats",
         description="Get knowledge vault statistics: total docs, by type, by scope, by oracle.",
         inputSchema={"type": "object", "properties": {}},
     ),
     Tool(
-        name="mysynapse_list",
+        name="synapse_list",
         description="List documents with filters. Returns summaries.",
         inputSchema={
             "type": "object",
@@ -169,7 +169,7 @@ async def create_app(settings: Settings | None = None) -> Server:
     push = Push(pg, qdrant, embedder)
     search = HybridSearch(pg, qdrant, embedder)
 
-    server = Server("mysynapse")
+    server = Server("synapse")
 
     @server.list_tools()
     async def list_tools():
@@ -178,7 +178,7 @@ async def create_app(settings: Settings | None = None) -> Server:
     @server.call_tool()
     async def call_tool(name: str, arguments: dict):
         try:
-            if name == "mysynapse_search":
+            if name == "synapse_search":
                 results = await search.search(
                     query=arguments["query"],
                     scope=arguments.get("scope"),
@@ -191,7 +191,7 @@ async def create_app(settings: Settings | None = None) -> Server:
                 )
                 return [TextContent(type="text", text=json.dumps(results, indent=2))]
 
-            elif name == "mysynapse_push":
+            elif name == "synapse_push":
                 result = await push.push_text(
                     title=arguments["title"],
                     content=arguments["content"],
@@ -207,7 +207,7 @@ async def create_app(settings: Settings | None = None) -> Server:
                 )
                 return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
-            elif name == "mysynapse_supersede":
+            elif name == "synapse_supersede":
                 result = await pg.supersede(
                     old_id=arguments["old_id"],
                     new_content=arguments["new_content"],
@@ -218,7 +218,7 @@ async def create_app(settings: Settings | None = None) -> Server:
                     await qdrant.mark_superseded(arguments["old_id"])
                 return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
-            elif name == "mysynapse_trace":
+            elif name == "synapse_trace":
                 validate_trace_relation(arguments["relation"])
                 result = await pg.add_trace(
                     source_id=arguments["source_id"],
@@ -228,7 +228,7 @@ async def create_app(settings: Settings | None = None) -> Server:
                 )
                 return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
-            elif name == "mysynapse_trace_chain":
+            elif name == "synapse_trace_chain":
                 results = await pg.get_trace_chain(
                     doc_id=arguments["doc_id"],
                     direction=arguments.get("direction", "both"),
@@ -237,14 +237,14 @@ async def create_app(settings: Settings | None = None) -> Server:
                 )
                 return [TextContent(type="text", text=json.dumps(results, indent=2))]
 
-            elif name == "mysynapse_concepts":
+            elif name == "synapse_concepts":
                 results = await pg.list_concepts(
                     search=arguments.get("search"),
                     limit=arguments.get("limit", 50),
                 )
                 return [TextContent(type="text", text=json.dumps(results, indent=2))]
 
-            elif name == "mysynapse_get":
+            elif name == "synapse_get":
                 doc = await pg.get(
                     doc_id=arguments["id"],
                     include_chain=arguments.get("include_chain", True),
@@ -253,15 +253,15 @@ async def create_app(settings: Settings | None = None) -> Server:
                     return [TextContent(type="text", text=json.dumps({"error": "not found"}))]
                 return [TextContent(type="text", text=json.dumps(doc, indent=2, default=str))]
 
-            elif name == "mysynapse_scope":
+            elif name == "synapse_scope":
                 scopes = await pg.list_scopes()
                 return [TextContent(type="text", text=json.dumps(scopes, indent=2))]
 
-            elif name == "mysynapse_stats":
+            elif name == "synapse_stats":
                 stats = await pg.stats()
                 return [TextContent(type="text", text=json.dumps(stats, indent=2, default=str))]
 
-            elif name == "mysynapse_list":
+            elif name == "synapse_list":
                 docs = await pg.list_docs(
                     scope=arguments.get("scope"),
                     doc_type=arguments.get("doc_type"),

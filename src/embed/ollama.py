@@ -8,7 +8,7 @@ import httpx
 
 from src.config import Settings
 
-log = logging.getLogger("mysynapse.embed")
+log = logging.getLogger("synapse.embed")
 
 MAX_CHUNK_CHARS = 4000
 

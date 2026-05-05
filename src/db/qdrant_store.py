@@ -7,7 +7,7 @@ from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import (
     Distance, PointStruct, VectorParams,
     Filter, FieldCondition, MatchValue,
-    SearchRequest,
+    Query,
 )
 
 from src.config import Settings
@@ -100,9 +100,9 @@ class QdrantStore:
 
         search_filter = Filter(must=conditions) if conditions else None
 
-        results = await self.client.search(
+        results = await self.client.query_points(
             collection_name=self._settings.qdrant_collection,
-            query_vector=vector,
+            query=vector,
             query_filter=search_filter,
             limit=limit,
             with_payload=True,
@@ -111,13 +111,13 @@ class QdrantStore:
         return [
             {
                 "id": str(r.id),
-                "title": r.payload.get("title", ""),
-                "scope": r.payload.get("scope", ""),
-                "doc_type": r.payload.get("doc_type", ""),
-                "oracle_name": r.payload.get("oracle_name"),
+                "title": r.payload.get("title", "") if r.payload else "",
+                "scope": r.payload.get("scope", "") if r.payload else "",
+                "doc_type": r.payload.get("doc_type", "") if r.payload else "",
+                "oracle_name": r.payload.get("oracle_name") if r.payload else None,
                 "score": r.score,
             }
-            for r in results
+            for r in results.points
         ]
 
     async def mark_superseded(self, doc_id: str) -> None:

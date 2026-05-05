@@ -12,7 +12,7 @@ from src.ingest.push import Push
 from src.ingest.oracle_paths import validate_doc_type, validate_trace_relation
 from src.retrieve.hybrid_search import HybridSearch
 
-router = APIRouter(prefix="/api", tags=["mysynapse"])
+router = APIRouter(prefix="/api", tags=["synapse"])
 
 pg: PgStore | None = None
 qdrant: QdrantStore | None = None

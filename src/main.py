@@ -1,4 +1,4 @@
-"""mysynapse — FastAPI app + CLI entry point."""
+"""synapse — FastAPI app + CLI entry point."""
 
 import argparse
 import asyncio
@@ -11,13 +11,14 @@ from src.api.routes import init_routes, router
 from src.config import Settings
 from src.db.pg_store import PgStore
 from src.db.qdrant_store import QdrantStore
+from src.embed.ollama import OllamaEmbedder
 
-log = logging.getLogger("mysynapse")
+log = logging.getLogger("synapse")
 
 _pg: PgStore | None = None
 _qdrant: QdrantStore | None = None
 
-app = FastAPI(title="mysynapse", version="0.1.0",
+app = FastAPI(title="synapse", version="3.0.0",
               description="Agent-first knowledge service for the Oracle ecosystem")
 app.include_router(router)
 
@@ -51,7 +52,7 @@ async def shutdown():
 
 
 def cli_main():
-    parser = argparse.ArgumentParser(prog="mysynapse")
+    parser = argparse.ArgumentParser(prog="synapse")
     sub = parser.add_subparsers(dest="command")
 
     sub.add_parser("serve", help="Start HTTP API server")

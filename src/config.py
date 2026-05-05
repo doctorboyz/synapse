@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 @dataclass
 class Settings:
     database_url: str = field(default_factory=lambda: os.getenv(
-        "DATABASE_URL", "postgresql://mysynapse:mysynapse@localhost:5432/mysynapse"
+        "DATABASE_URL", "postgresql://admin:88888888@localhost:5432/mysynapse"
     ))
     qdrant_url: str = field(default_factory=lambda: os.getenv(
         "QDRANT_URL", "http://localhost:6333"
