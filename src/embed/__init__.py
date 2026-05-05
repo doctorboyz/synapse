@@ -1,0 +1,1 @@
+"""Embedding package — async Ollama embedder."""

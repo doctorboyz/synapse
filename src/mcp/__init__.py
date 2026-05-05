@@ -1,0 +1,1 @@
+"""MCP server package — stdio transport for Claude Code."""

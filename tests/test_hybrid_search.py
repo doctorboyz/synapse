@@ -1,82 +1,67 @@
-"""Tests for synapse.retrieve.hybrid_search — RRF fusion, modes, fallback."""
-
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+"""Tests for HybridSearch — RRF fusion, FTS fallback."""
 
 import pytest
+import pytest_asyncio
+from unittest.mock import AsyncMock, MagicMock
 
-from synapse.store.sqlite_store import SQLiteStore
-from synapse.retrieve.hybrid_search import HybridSearch
-from synapse.exceptions import SearchError
+from src.retrieve.hybrid_search import reciprocal_rank_fusion, HybridSearch
 
 
-class TestHybridSearchFtsOnly:
-    def test_fts_mode_without_lancedb(self, populated_vault):
-        search = HybridSearch(populated_vault, lancedb=None)
-        results = search.search("python", mode="fts", limit=5)
+class TestReciprocalRankFusion:
+    def test_merge_two_lists(self):
+        list_a = [{"id": "1", "title": "A", "scope": "shared", "doc_type": "learning", "score": 0.9}]
+        list_b = [{"id": "2", "title": "B", "scope": "shared", "doc_type": "pattern", "score": 0.8}]
+        result = reciprocal_rank_fusion([list_a, list_b])
+        assert len(result) == 2
+
+    def test_merge_overlapping_ids(self):
+        list_a = [{"id": "1", "title": "A", "scope": "shared", "doc_type": "learning", "score": 0.9}]
+        list_b = [{"id": "1", "title": "A", "scope": "shared", "doc_type": "learning", "score": 0.7}]
+        result = reciprocal_rank_fusion([list_a, list_b])
+        assert len(result) == 1
+        assert result[0]["id"] == "1"
+
+    def test_empty_lists(self):
+        result = reciprocal_rank_fusion([[], []])
+        assert result == []
+
+    def test_custom_weights(self):
+        list_a = [{"id": "1", "title": "A", "scope": "shared", "doc_type": "learning", "score": 0.9}]
+        list_b = [{"id": "2", "title": "B", "scope": "shared", "doc_type": "pattern", "score": 0.8}]
+        result = reciprocal_rank_fusion([list_a, list_b], weights=[0.8, 0.2])
+        assert len(result) == 2
+        assert result[0]["id"] == "1"
+
+
+@pytest.mark.asyncio
+class TestHybridSearch:
+    async def test_fts_mode(self, clean_pg):
+        await clean_pg.add(title="Python Tips", content="Use list comprehensions", scope="shared")
+        search = HybridSearch(clean_pg)
+        results = await search.search("python", mode="fts")
         assert len(results) >= 1
 
-    def test_fts_mode_with_scope(self, populated_vault):
-        search = HybridSearch(populated_vault, lancedb=None)
-        results = search.search("hooks", scope="frontend", mode="fts")
-        assert all(r["scope"] == "frontend" for r in results)
+    async def test_fts_mode_with_scope(self, clean_pg):
+        await clean_pg.add(title="Shared Doc", content="public info", scope="shared")
+        await clean_pg.add(title="Emily Doc", content="private info", scope="emily", oracle_name="emily")
+        search = HybridSearch(clean_pg)
+        results = await search.search("info", scope="emily", mode="fts")
+        assert len(results) >= 1
+        assert all(r["scope"] == "emily" for r in results)
 
-    def test_empty_query_returns_empty(self, populated_vault):
-        search = HybridSearch(populated_vault, lancedb=None)
-        results = search.search("", mode="fts")
+    async def test_hybrid_falls_back_to_fts_without_qdrant(self, clean_pg):
+        await clean_pg.add(title="Docker Setup", content="Use compose v2", scope="shared")
+        search = HybridSearch(clean_pg, qdrant=None, embedder=None)
+        results = await search.search("docker", mode="hybrid")
+        assert len(results) >= 1
+
+    async def test_dense_mode_without_qdrant_raises(self, clean_pg):
+        from src.retrieve.hybrid_search import SearchError
+        search = HybridSearch(clean_pg)
+        with pytest.raises(SearchError, match="Dense search requires"):
+            await search.search("test", mode="dense")
+
+    async def test_no_results(self, clean_pg):
+        search = HybridSearch(clean_pg)
+        results = await search.search("nonexistent_xyz", mode="fts")
         assert results == []
-
-
-class TestHybridSearchDenseMode:
-    def test_dense_mode_without_lancedb_raises(self, populated_vault):
-        search = HybridSearch(populated_vault, lancedb=None)
-        with pytest.raises(SearchError):
-            search.search("test", mode="dense")
-
-
-class TestHybridSearchHybridMode:
-    def test_hybrid_mode_without_lancedb_falls_back(self, populated_vault):
-        search = HybridSearch(populated_vault, lancedb=None)
-        results = search.search("python", mode="hybrid")
-        # Should fall back to FTS-only without crashing
-        assert isinstance(results, list)
-
-
-class TestHybridSearchWithLanceDB:
-    def test_hybrid_mode_with_lancedb(self, tmp_vault, mock_ollama):
-        try:
-            from synapse.store.lancedb_store import LanceDBStore
-            lancedb = LanceDBStore(tmp_vault)
-        except (ImportError, Exception):
-            pytest.skip("lancedb not available")
-
-        sqlite = SQLiteStore(tmp_vault)
-        from synapse.ingest.push import Push
-        from synapse.scope.manager import ScopeManager
-        scope_mgr = ScopeManager(sqlite)
-        push = Push(sqlite, lancedb, scope_mgr)
-        push.push_text("Python Tips", "Use list comprehensions for filtering", scope="shared")
-        push.push_text("Git Workflow", "Rebase vs merge for clean history", scope="shared")
-
-        search = HybridSearch(sqlite, lancedb)
-        results = search.search("python", mode="hybrid")
-        assert len(results) >= 1
-
-        sqlite.close()
-        lancedb.close()
-
-
-class TestRRFFusion:
-    def test_empty_fts_and_dense_returns_empty(self, populated_vault):
-        search = HybridSearch(populated_vault, lancedb=None)
-        # Search for something that won't match any docs
-        results = search.search("xyznonexistent", mode="fts")
-        assert results == []
-
-
-class TestWeights:
-    def test_custom_weights_via_search(self, populated_vault):
-        search = HybridSearch(populated_vault, lancedb=None)
-        # Custom weights passed to search() method, not constructor
-        results = search.search("python", mode="fts")
-        assert len(results) >= 1

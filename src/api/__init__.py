@@ -1,0 +1,1 @@
+"""API package — HTTP API mirroring MCP tools."""
