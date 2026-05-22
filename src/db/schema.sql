@@ -1,4 +1,4 @@
--- mysynapse PostgreSQL schema (idempotent — safe to run on every startup)
+-- synapse PostgreSQL schema (idempotent — safe to run on every startup)
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
@@ -50,6 +50,9 @@ CREATE INDEX IF NOT EXISTS idx_doc_hash ON knowledge_documents(content_hash);
 CREATE INDEX IF NOT EXISTS idx_doc_brain_tier ON knowledge_documents(brain_tier) WHERE superseded_by IS NULL;
 CREATE INDEX IF NOT EXISTS idx_doc_source_project ON knowledge_documents(source_project) WHERE superseded_by IS NULL;
 
+-- Summary column for auto-summarization
+ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS summary TEXT;
+
 CREATE TABLE IF NOT EXISTS supersede_log (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     old_id      UUID NOT NULL REFERENCES knowledge_documents(id),
@@ -93,3 +96,67 @@ CREATE TABLE IF NOT EXISTS trace (
 
 CREATE INDEX IF NOT EXISTS idx_trace_source ON trace(source_id);
 CREATE INDEX IF NOT EXISTS idx_trace_target ON trace(target_id);
+
+-- Project registry for cross-project search
+CREATE TABLE IF NOT EXISTS registered_projects (
+    scope           TEXT PRIMARY KEY,
+    project_path    TEXT NOT NULL,
+    registered_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Search topics per scope — web/social monitoring
+CREATE TABLE IF NOT EXISTS search_topics (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    scope           TEXT NOT NULL,
+    topic           TEXT NOT NULL,
+    source          TEXT NOT NULL DEFAULT 'web',  -- web, twitter, reddit, hn, youtube
+    frequency       TEXT NOT NULL DEFAULT 'daily', -- hourly, daily, weekly
+    last_searched   TIMESTAMPTZ,
+    enabled         BOOLEAN DEFAULT true,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(scope, topic, source)
+);
+CREATE INDEX IF NOT EXISTS idx_search_topic_scope ON search_topics(scope);
+CREATE INDEX IF NOT EXISTS idx_search_topic_enabled ON search_topics(enabled) WHERE enabled = true;
+
+-- Reconcile log — persistent audit trail
+CREATE TABLE IF NOT EXISTS reconcile_log (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    started_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at    TIMESTAMPTZ,
+    scope           TEXT,
+    dry_run         BOOLEAN DEFAULT false,
+    merged_duplicates   INTEGER DEFAULT 0,
+    removed_duplicates  INTEGER DEFAULT 0,
+    conflicts_found     INTEGER DEFAULT 0,
+    conflicts_resolved  INTEGER DEFAULT 0,
+    status          TEXT DEFAULT 'running',  -- running, completed, failed
+    error_message   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_reconcile_log_started ON reconcile_log(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_reconcile_log_status ON reconcile_log(status);
+
+-- Pending reviews — LINE confirmation flow
+CREATE TABLE IF NOT EXISTS pending_reviews (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    title           TEXT NOT NULL,
+    content         TEXT NOT NULL,
+    summary         TEXT,
+    scope           TEXT NOT NULL DEFAULT 'shared',
+    doc_type        TEXT NOT NULL DEFAULT 'note',
+    source_type     TEXT NOT NULL DEFAULT 'line',
+    source_project  TEXT,
+    oracle_name     TEXT,
+    tags            JSONB DEFAULT '[]',
+    concepts        JSONB DEFAULT '[]',
+    metadata        JSONB DEFAULT '{}',
+    reply_token     TEXT,
+    user_id         TEXT,
+    chat_id         TEXT,
+    status          TEXT DEFAULT 'pending',  -- pending, confirmed, cancelled, expired
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at      TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '1 hour'
+);
+CREATE INDEX IF NOT EXISTS idx_pending_user ON pending_reviews(user_id, status) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_pending_chat ON pending_reviews(chat_id, status) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_pending_expires ON pending_reviews(expires_at);

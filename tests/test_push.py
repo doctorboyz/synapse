@@ -1,52 +1,8 @@
 """Integration tests — Push pipeline with dual-store write and oracle path detection."""
 
 import pytest
-import pytest_asyncio
 
-from src.config import Settings
-from src.db.pg_store import PgStore
-from src.db.qdrant_store import QdrantStore
-from src.embed.ollama import OllamaEmbedder
-from src.ingest.push import Push
 from src.ingest.oracle_paths import extract_metadata
-
-
-@pytest_asyncio.fixture
-async def pg_store():
-    settings = Settings()
-    settings.database_url = "postgresql://admin:88888888@localhost:5432/mysynapse"
-    store = PgStore(settings)
-    await store.connect()
-    await store.init_schema()
-    yield store
-    await store.close()
-
-
-@pytest_asyncio.fixture
-async def clean_pg(pg_store):
-    async with pg_store.pool.acquire() as conn:
-        await conn.execute("DELETE FROM document_concepts")
-        await conn.execute("DELETE FROM trace")
-        await conn.execute("DELETE FROM supersede_log")
-        await conn.execute("DELETE FROM knowledge_documents")
-        await conn.execute("DELETE FROM concepts")
-        await conn.execute("DELETE FROM scope_registry")
-    return pg_store
-
-
-@pytest_asyncio.fixture
-def qdrant_store():
-    return None  # Qdrant not available in tests
-
-
-@pytest_asyncio.fixture
-def embedder():
-    return None  # Ollama not available in tests
-
-
-@pytest_asyncio.fixture
-def push(clean_pg, qdrant_store, embedder):
-    return Push(clean_pg, qdrant_store, embedder)
 
 
 @pytest.mark.asyncio

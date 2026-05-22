@@ -149,6 +149,58 @@ TOOL_DEFINITIONS = [
             },
         },
     ),
+    Tool(
+        name="synapse_register",
+        description="Register a project with the vault for cross-project search.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "project_path": {"type": "string", "description": "Path to the project directory"},
+                "scope": {"type": "string", "description": "Scope name (default: auto-detect from path)"},
+            },
+            "required": ["project_path"],
+        },
+    ),
+    Tool(
+        name="synapse_unregister",
+        description="Remove a project registration from the vault.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "scope": {"type": "string", "description": "Scope name to unregister"},
+            },
+            "required": ["scope"],
+        },
+    ),
+    Tool(
+        name="synapse_projects",
+        description="List all registered projects and their scopes.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    Tool(
+        name="synapse_search_cross",
+        description="Search across multiple scopes, merging results by best score.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query"},
+                "scopes": {"type": "array", "items": {"type": "string"}, "description": "List of scope names to search"},
+                "limit": {"type": "integer", "default": 10},
+                "mode": {"type": "string", "enum": ["hybrid", "dense", "fts"], "default": "hybrid"},
+            },
+            "required": ["query", "scopes"],
+        },
+    ),
+    Tool(
+        name="synapse_reconcile_log",
+        description="View reconcile audit history: when defrag/detox ran, what was merged/fixed, and if it failed.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "default": 20, "description": "Max history entries to return"},
+            },
+        },
+    ),
 ]
 
 
@@ -156,7 +208,6 @@ async def create_app(settings: Settings | None = None) -> Server:
     settings = settings or Settings()
     pg = PgStore(settings)
     qdrant = QdrantStore(settings)
-    embedder = OllamaEmbedder(settings)
 
     await pg.connect()
     await pg.init_schema()
@@ -165,6 +216,12 @@ async def create_app(settings: Settings | None = None) -> Server:
     except Exception:
         log.warning("Qdrant not available, falling back to FTS-only mode")
         qdrant = None
+
+    embedder = None
+    try:
+        embedder = OllamaEmbedder(settings)
+    except Exception:
+        log.warning("Ollama not available, running without embeddings")
 
     push = Push(pg, qdrant, embedder)
     search = HybridSearch(pg, qdrant, embedder)
@@ -271,6 +328,36 @@ async def create_app(settings: Settings | None = None) -> Server:
                     order=arguments.get("order", "newest"),
                 )
                 return [TextContent(type="text", text=json.dumps(docs, indent=2, default=str))]
+
+            elif name == "synapse_register":
+                from src.registry import register_project
+                result = await register_project(
+                    pg, arguments["project_path"], scope=arguments.get("scope"),
+                )
+                return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+            elif name == "synapse_unregister":
+                from src.registry import unregister_project
+                result = await unregister_project(pg, arguments["scope"])
+                return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+            elif name == "synapse_projects":
+                from src.registry import list_projects
+                result = await list_projects(pg)
+                return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+            elif name == "synapse_search_cross":
+                results = await search.search_cross_scope(
+                    query=arguments["query"],
+                    scopes=arguments["scopes"],
+                    limit=arguments.get("limit", 10),
+                    mode=arguments.get("mode", "hybrid"),
+                )
+                return [TextContent(type="text", text=json.dumps(results, indent=2))]
+
+            elif name == "synapse_reconcile_log":
+                logs = await pg.list_reconcile_log(limit=arguments.get("limit", 20))
+                return [TextContent(type="text", text=json.dumps(logs, indent=2, default=str))]
 
             else:
                 return [TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))]

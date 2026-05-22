@@ -48,12 +48,14 @@ class HybridSearch:
 
     def __init__(self, pg: PgStore, qdrant: QdrantStore | None = None,
                  embedder: OllamaEmbedder | None = None,
-                 weights: list[float] | None = None, rrf_k: int = 60):
+                 weights: list[float] | None = None, rrf_k: int = 60,
+                 cache=None):
         self.pg = pg
         self.qdrant = qdrant
         self.embedder = embedder
         self._weights = weights or [0.6, 0.4]
         self._rrf_k = rrf_k
+        self._cache = cache
 
     async def search(
         self,
@@ -66,6 +68,11 @@ class HybridSearch:
         limit: int = 10,
         mode: str = "hybrid",
     ) -> list[dict]:
+        # Check cache first
+        if self._cache:
+            cached = self._cache.get(query, scope=scope, mode=mode, limit=limit)
+            if cached is not None:
+                return cached
         if mode == "dense":
             if not self.qdrant or not self.embedder:
                 raise SearchError("Dense search requires Qdrant and OllamaEmbedder")
@@ -118,6 +125,30 @@ class HybridSearch:
             weights=self._weights,
             k=self._rrf_k,
         )
+        results = merged[:limit]
+
+        # Cache results
+        if self._cache:
+            self._cache.put(query, results, scope=scope, mode=mode, limit=limit)
+
+        return results
+
+    async def search_cross_scope(
+        self,
+        query: str,
+        scopes: list[str],
+        limit: int = 10,
+        mode: str = "hybrid",
+    ) -> list[dict]:
+        """Search across multiple scopes, merging results via RRF for fairness."""
+        per_scope: list[list[dict]] = []
+        for scope in scopes:
+            results = await self.search(
+                query=query, scope=scope, limit=limit * 2, mode=mode,
+            )
+            per_scope.append(results)
+
+        merged = reciprocal_rank_fusion(per_scope, weights=None, k=self._rrf_k)
         return merged[:limit]
 
 

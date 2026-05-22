@@ -1,19 +1,27 @@
-"""Configuration — settings from environment variables."""
+"""Configuration — settings from environment variables + optional YAML config."""
 
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
+
+import logging
+
+log = logging.getLogger("synapse.config")
+
+DEFAULT_CONFIG_PATH = Path.home() / ".synapse" / "config.yaml"
 
 
 @dataclass
 class Settings:
     database_url: str = field(default_factory=lambda: os.getenv(
-        "DATABASE_URL", "postgresql://admin:88888888@localhost:5432/mysynapse"
+        "DATABASE_URL",
+        os.getenv("SYNAPSE_DB_URL", "postgresql://admin:88888888@localhost:5432/synapse")
     ))
     qdrant_url: str = field(default_factory=lambda: os.getenv(
         "QDRANT_URL", "http://localhost:6333"
     ))
     qdrant_collection: str = field(default_factory=lambda: os.getenv(
-        "QDRANT_COLLECTION", "mysynapse_vectors"
+        "SYNAPSE_QDRANT_COLLECTION", "synapse_vectors"
     ))
     ollama_url: str = field(default_factory=lambda: os.getenv(
         "OLLAMA_URL", "http://localhost:11434"
@@ -28,13 +36,13 @@ class Settings:
         "EMBEDDING_TIMEOUT", "30"
     )))
     api_host: str = field(default_factory=lambda: os.getenv(
-        "MYSYNAPSE_HOST", "0.0.0.0"
+        "SYNAPSE_HOST", "0.0.0.0"
     ))
     api_port: int = field(default_factory=lambda: int(os.getenv(
-        "MYSYNAPSE_PORT", "8420"
+        "SYNAPSE_PORT", "8420"
     )))
     log_level: str = field(default_factory=lambda: os.getenv(
-        "LOG_LEVEL", "INFO"
+        "SYNAPSE_LOG_LEVEL", "INFO"
     ))
     search_weights: list[float] = field(default_factory=lambda: [
         float(x) for x in os.getenv("SEARCH_WEIGHTS", "0.6,0.4").split(",")
@@ -46,3 +54,96 @@ class Settings:
     cache_max_size: int = field(default_factory=lambda: int(os.getenv(
         "CACHE_MAX_SIZE", "1000"
     )))
+    # Daemon settings
+    daemon_pid_file: str = field(default_factory=lambda: os.getenv(
+        "SYNAPSE_PID_FILE", str(Path.home() / ".synapse" / "synapse.pid")
+    ))
+    scan_interval: int = field(default_factory=lambda: int(os.getenv(
+        "SYNAPSE_SCAN_INTERVAL", "0"
+    )))  # 0 = disabled
+    reconcile_hour: int = field(default_factory=lambda: int(os.getenv(
+        "SYNAPSE_RECONCILE_HOUR", "2"
+    )))  # 0-23, default 2 AM
+    config_path: str = field(default_factory=lambda: os.getenv(
+        "SYNAPSE_CONFIG", ""
+    ))
+    # Web search API keys
+    serper_api_key: str = field(default_factory=lambda: os.getenv(
+        "SERPER_API_KEY", ""
+    ))
+    tavily_api_key: str = field(default_factory=lambda: os.getenv(
+        "TAVILY_API_KEY", ""
+    ))
+    web_search_provider: str = field(default_factory=lambda: os.getenv(
+        "WEB_SEARCH_PROVIDER", "serper"
+    ))
+    topic_monitor_interval: int = field(default_factory=lambda: int(os.getenv(
+        "SYNAPSE_TOPIC_INTERVAL", "3600"
+    )))  # 0 = disabled, default 1 hour
+    # Webhook security
+    webhook_secret: str = field(default_factory=lambda: os.getenv(
+        "SYNAPSE_WEBHOOK_SECRET", ""
+    ))  # empty = no signature verification
+    # LINE integration
+    line_channel_secret: str = field(default_factory=lambda: os.getenv(
+        "LINE_CHANNEL_SECRET", ""
+    ))  # LINE webhook signature verification
+    line_channel_access_token: str = field(default_factory=lambda: os.getenv(
+        "LINE_CHANNEL_ACCESS_TOKEN", ""
+    ))  # Optional — for reply messages
+    # OpenRouter LLM integration (fallback to Ollama)
+    openrouter_api_key: str = field(default_factory=lambda: os.getenv(
+        "OPENROUTER_API_KEY", ""
+    ))
+    openrouter_base_url: str = field(default_factory=lambda: os.getenv(
+        "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
+    ))
+    openrouter_model: str = field(default_factory=lambda: os.getenv(
+        "OPENROUTER_MODEL", "google/gemini-2.0-flash-001"
+    ))  # default: cheap + Thai-capable
+    openrouter_vision_model: str = field(default_factory=lambda: os.getenv(
+        "OPENROUTER_VISION_MODEL", "google/gemini-2.0-flash-001"
+    ))
+    openrouter_summary_model: str = field(default_factory=lambda: os.getenv(
+        "OPENROUTER_SUMMARY_MODEL", "deepseek/deepseek-chat-v3-0324"
+    ))
+    openrouter_timeout: int = field(default_factory=lambda: int(os.getenv(
+        "OPENROUTER_TIMEOUT", "60"
+    )))
+
+    @classmethod
+    def from_yaml(cls, path: str | Path | None = None) -> "Settings":
+        """Load settings from YAML file, falling back to env vars for missing keys."""
+        if path is None:
+            path = DEFAULT_CONFIG_PATH
+        path = Path(path)
+
+        settings = cls()
+
+        if not path.exists():
+            return settings
+
+        try:
+            import yaml
+            with open(path, encoding="utf-8") as f:
+                config = yaml.safe_load(f) or {}
+
+            for key, value in config.items():
+                if hasattr(settings, key) and value is not None:
+                    setattr(settings, key, value)
+
+            log.info("Loaded config from %s", path)
+        except ImportError:
+            log.warning("PyYAML not installed, skipping config file")
+        except Exception as e:
+            log.warning("Failed to load config from %s: %s", path, e)
+
+        return settings
+
+    def reload(self) -> None:
+        """Re-read settings from env vars + config file (for SIGHUP)."""
+        new_settings = Settings.from_yaml(self.config_path or None)
+        for key in vars(new_settings):
+            if key != "config_path":
+                setattr(self, key, getattr(new_settings, key))
+        log.info("Configuration reloaded")

@@ -6,6 +6,7 @@ Detects oracle metadata from the file path and pushes to synapse.
 
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -90,16 +91,26 @@ async def ingest_file(file_path: str):
 
 
 def main():
-    """CLI entry point for hook handler. Reads file path from stdin or argv."""
-    if len(sys.argv) > 1:
+    """CLI entry point for hook handler. Reads file path from argv, env var, or stdin."""
+    # Priority: CLI arg > env var > stdin JSON
+    file_path = ""
+    if len(sys.argv) > 1 and sys.argv[1]:
         file_path = sys.argv[1]
+    elif os.environ.get("CLAUDE_CODE_FILEPATH"):
+        file_path = os.environ["CLAUDE_CODE_FILEPATH"]
     else:
-        data = json.load(sys.stdin)
-        file_path = data.get("file_path", data.get("tool_input", {}).get("file_path", ""))
+        try:
+            data = json.load(sys.stdin)
+            # Claude Code hook envelope: {"tool_input": {"file_path": "..."}}
+            file_path = data.get("tool_input", {}).get("file_path", "")
+            if not file_path:
+                file_path = data.get("file_path", "")
+        except (json.JSONDecodeError, EOFError):
+            pass
 
     if not file_path:
-        print("hook_handler: no file_path provided", file=sys.stderr)
-        sys.exit(1)
+        # No file path available — silently skip (non-blocking hook)
+        sys.exit(0)
 
     asyncio.run(ingest_file(file_path))
 

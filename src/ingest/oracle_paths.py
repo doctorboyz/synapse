@@ -21,7 +21,7 @@ VALID_DOC_TYPES = {
     "protocol", "wisdom", "instinct", "log", "note",
 }
 
-VALID_TRACE_RELATIONS = {"derived_from", "refines", "contradicts", "extends"}
+VALID_TRACE_RELATIONS = {"derived_from", "refines", "contradicts", "extends", "references"}
 
 
 def extract_oracle_name(repo_path: str) -> str:

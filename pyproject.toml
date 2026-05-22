@@ -16,6 +16,10 @@ dependencies = [
     "uvicorn>=0.34.0",
     "pyyaml>=6.0",
     "mcp>=1.0.0",
+    "beautifulsoup4>=4.12",
+    "youtube-transcript-api>=0.6",
+    "pypdf>=4.0",
+    "python-docx>=1.0",
 ]
 
 [project.optional-dependencies]
@@ -24,6 +28,10 @@ dev = [
     "pytest-asyncio>=0.24",
     "pytest-cov>=5.0",
     "testcontainers[postgres]>=4.0",
+]
+init = [
+    "pypdf>=4.0",
+    "python-docx>=1.0",
 ]
 
 [project.scripts]

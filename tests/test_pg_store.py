@@ -156,3 +156,113 @@ class TestPgStoreScopeStats:
         await clean_pg.add(title="Second", content="content 2", scope="shared")
         docs = await clean_pg.list_docs(limit=10)
         assert len(docs) >= 2
+
+
+@pytest.mark.asyncio
+class TestPgStoreSearchTopics:
+    async def test_add_search_topic(self, clean_pg):
+        result = await clean_pg.add_search_topic("test-scope", "python async", "web", "daily")
+        assert result["scope"] == "test-scope"
+        assert result["topic"] == "python async"
+        assert result["source"] == "web"
+        assert result["enabled"] is True
+
+    async def test_add_duplicate_topic(self, clean_pg):
+        await clean_pg.add_search_topic("test-scope", "python", "web", "daily")
+        result = await clean_pg.add_search_topic("test-scope", "python", "web", "hourly")
+        assert result.get("status") == "duplicate" or result.get("id")
+
+    async def test_list_search_topics(self, clean_pg):
+        await clean_pg.add_search_topic("s1", "docker", "web", "daily")
+        await clean_pg.add_search_topic("s1", "kubernetes", "reddit", "weekly")
+        await clean_pg.add_search_topic("s2", "python", "web", "daily")
+
+        all_topics = await clean_pg.list_search_topics()
+        assert len(all_topics) == 3
+
+        s1_topics = await clean_pg.list_search_topics(scope="s1")
+        assert len(s1_topics) == 2
+
+    async def test_list_enabled_only(self, clean_pg):
+        t1 = await clean_pg.add_search_topic("s1", "enabled-topic", "web", "daily")
+        t2 = await clean_pg.add_search_topic("s1", "disabled-topic", "web", "daily")
+        await clean_pg.toggle_search_topic(t2["id"], False)
+
+        enabled = await clean_pg.list_search_topics(scope="s1", enabled_only=True)
+        assert len(enabled) == 1
+        assert enabled[0]["topic"] == "enabled-topic"
+
+    async def test_remove_search_topic(self, clean_pg):
+        topic = await clean_pg.add_search_topic("s1", "temp", "web", "daily")
+        result = await clean_pg.remove_search_topic(topic["id"])
+        assert result["status"] == "deleted"
+        topics = await clean_pg.list_search_topics(scope="s1")
+        assert len(topics) == 0
+
+    async def test_toggle_search_topic(self, clean_pg):
+        topic = await clean_pg.add_search_topic("s1", "toggle-me", "web", "daily")
+        assert topic["enabled"] is True
+        result = await clean_pg.toggle_search_topic(topic["id"], False)
+        assert result["enabled"] is False
+        assert result["status"] == "updated"
+        topics = await clean_pg.list_search_topics(scope="s1")
+        assert topics[0]["enabled"] is False
+
+    async def test_find_by_source_file(self, clean_pg):
+        await clean_pg.add(
+            title="Test", content="content", scope="s1",
+            source_file="https://example.com/article",
+        )
+        found = await clean_pg.find_by_source_file("https://example.com/article", "s1")
+        assert found is not None
+        assert found["source_file"] == "https://example.com/article"
+
+    async def test_find_by_source_file_not_found(self, clean_pg):
+        found = await clean_pg.find_by_source_file("https://example.com/missing", "s1")
+        assert found is None
+
+    async def test_update_search_topic_last_searched(self, clean_pg):
+        topic = await clean_pg.add_search_topic("s1", "python", "web", "daily")
+        await clean_pg.update_search_topic_last_searched(topic["id"])
+        topics = await clean_pg.list_search_topics(scope="s1")
+        assert topics[0]["last_searched"] is not None
+
+
+@pytest.mark.asyncio
+class TestPgStoreReconcileLog:
+    async def test_start_and_complete_reconcile_log(self, clean_pg):
+        entry = await clean_pg.start_reconcile_log(scope="s1", dry_run=False)
+        assert entry["id"]
+        assert entry["started_at"]
+
+        completed = await clean_pg.complete_reconcile_log(
+            log_id=entry["id"],
+            merged_duplicates=3,
+            removed_duplicates=1,
+            conflicts_found=2,
+            conflicts_resolved=1,
+            status="completed",
+        )
+        assert completed["status"] == "completed"
+        assert completed["completed_at"]
+
+    async def test_list_reconcile_log(self, clean_pg):
+        e1 = await clean_pg.start_reconcile_log(scope="s1", dry_run=False)
+        e2 = await clean_pg.start_reconcile_log(scope="s2", dry_run=True)
+        await clean_pg.complete_reconcile_log(log_id=e1["id"], status="completed")
+        await clean_pg.complete_reconcile_log(log_id=e2["id"], status="completed")
+
+        logs = await clean_pg.list_reconcile_log(limit=10)
+        assert len(logs) == 2
+        assert logs[0]["status"] == "completed"
+
+    async def test_failed_reconcile_log(self, clean_pg):
+        entry = await clean_pg.start_reconcile_log(scope="s1", dry_run=False)
+        await clean_pg.complete_reconcile_log(
+            log_id=entry["id"],
+            status="failed",
+            error_message="DB connection lost",
+        )
+        logs = await clean_pg.list_reconcile_log(limit=1)
+        assert logs[0]["status"] == "failed"
+        assert logs[0]["error_message"] == "DB connection lost"

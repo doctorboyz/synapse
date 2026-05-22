@@ -1,0 +1,21 @@
+import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { Layout } from './shared/components/Layout'
+import { KnowledgeGraphPage } from './features/knowledge-graph/KnowledgeGraphPage'
+import { UploadPage } from './features/upload/UploadPage'
+import { ChatPage } from './features/chat/ChatPage'
+
+function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route element={<Layout />}>
+          <Route path="/" element={<KnowledgeGraphPage />} />
+          <Route path="/upload" element={<UploadPage />} />
+          <Route path="/chat" element={<ChatPage />} />
+        </Route>
+      </Routes>
+    </BrowserRouter>
+  )
+}
+
+export default App

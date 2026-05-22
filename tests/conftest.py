@@ -1,16 +1,20 @@
-"""Test configuration — uses Docker postgres on ai-server."""
+"""Test configuration — shared V2 fixtures for PostgreSQL-based tests."""
 
 import os
 
 import pytest
 import pytest_asyncio
+from httpx import AsyncClient, ASGITransport
 
 from src.config import Settings
 from src.db.pg_store import PgStore
+from src.embed.ollama import OllamaEmbedder
+from src.ingest.push import Push
+from src.retrieve.hybrid_search import HybridSearch
 
 TEST_DB_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql://admin:88888888@localhost:5432/mysynapse",
+    "postgresql://admin:88888888@localhost:5432/synapse",
 )
 
 # Module-level store, created per-event-loop
@@ -41,4 +45,43 @@ async def clean_pg(pg_store):
         await conn.execute("DELETE FROM knowledge_documents")
         await conn.execute("DELETE FROM concepts")
         await conn.execute("DELETE FROM scope_registry")
+        await conn.execute("DELETE FROM search_topics")
+        await conn.execute("DELETE FROM reconcile_log")
+        await conn.execute("DELETE FROM pending_reviews")
     return pg_store
+
+
+@pytest.fixture
+def qdrant_store():
+    return None
+
+
+@pytest.fixture
+def embedder():
+    return None
+
+
+@pytest_asyncio.fixture
+def push(clean_pg, qdrant_store, embedder):
+    return Push(clean_pg, qdrant_store, embedder)
+
+
+@pytest_asyncio.fixture
+def search(clean_pg, qdrant_store, embedder):
+    return HybridSearch(clean_pg, qdrant_store, embedder)
+
+
+@pytest_asyncio.fixture
+def app_components(clean_pg, push, search):
+    return clean_pg, push, search
+
+
+@pytest_asyncio.fixture
+async def api_client(clean_pg):
+    from src.api.routes import init_routes
+    from src.main import app
+
+    init_routes(clean_pg, qdrant_store=None, embedder_client=None, settings=None)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client

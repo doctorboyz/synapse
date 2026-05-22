@@ -57,10 +57,13 @@ class PgStore:
         brain_tier: str | None = None,
         concepts: list[str] | None = None,
         tags: list[str] | None = None,
+        summary: str | None = None,
     ) -> dict:
         content_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
-        concepts_json = json.dumps(concepts or [])
-        tags_json = json.dumps(tags or [])
+        concepts_list = concepts if isinstance(concepts, list) else []
+        tags_list = tags if isinstance(tags, list) else []
+        concepts_json = concepts if isinstance(concepts, str) else json.dumps(concepts or [])
+        tags_json = tags if isinstance(tags, str) else json.dumps(tags or [])
 
         async with self.pool.acquire() as conn:
             existing = await conn.fetchrow(
@@ -74,12 +77,12 @@ class PgStore:
                 """INSERT INTO knowledge_documents
                    (title, content, content_hash, scope, doc_type, source_file,
                     source_type, source_project, oracle_name, brain_path,
-                    brain_tier, concepts, tags)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13::jsonb)
+                    brain_tier, concepts, tags, summary)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13::jsonb, $14)
                    RETURNING id""",
                 title, content, content_hash, scope, doc_type, source_file,
                 source_type, source_project, oracle_name, brain_path,
-                brain_tier, concepts_json, tags_json,
+                brain_tier, concepts_json, tags_json, summary,
             )
             doc_id = str(row["id"])
 
@@ -90,8 +93,8 @@ class PgStore:
                 scope,
             )
 
-            if concepts:
-                for concept in concepts:
+            if concepts_list:
+                for concept in concepts_list:
                     await conn.execute(
                         """INSERT INTO concepts (name) VALUES ($1) ON CONFLICT (name) DO NOTHING""",
                         concept,
@@ -152,14 +155,15 @@ class PgStore:
                 """INSERT INTO knowledge_documents
                    (title, content, content_hash, scope, doc_type, source_file,
                     source_type, source_project, oracle_name, brain_path,
-                    brain_tier, concepts, tags)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13::jsonb)
+                    brain_tier, concepts, tags, summary)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13::jsonb, $14)
                    RETURNING id""",
                 title, new_content, content_hash,
                 old_row["scope"], old_row["doc_type"], old_row["source_file"],
                 old_row["source_type"], old_row["source_project"],
                 old_row["oracle_name"], old_row["brain_path"],
                 old_row["brain_tier"], old_row["concepts"], old_row["tags"],
+                old_row.get("summary"),
             )
 
             await conn.execute(
@@ -299,15 +303,18 @@ class PgStore:
         visited = {start_id}
         current_ids = [start_id]
 
-        for _ in range(max_depth):
+        for depth in range(max_depth):
             if not current_ids:
                 break
 
-            rel_filter = f" AND relation = '{relation}'" if relation else ""
+            rel_filter = f" AND t.relation = '{relation}'" if relation else ""
             placeholders = ", ".join(f"${i+1}" for i in range(len(current_ids)))
-            sql = f"""SELECT t.source_id, t.target_id, t.relation, t.confidence
+            sql = f"""SELECT t.source_id, t.target_id, t.relation, t.confidence,
+                             kd.id, kd.title, kd.doc_type
                       FROM trace t
-                      WHERE t.{match_col} IN ({placeholders}){rel_filter}"""
+                      JOIN knowledge_documents kd ON kd.id = t.{follow_col}
+                      WHERE t.{match_col} IN ({placeholders}){rel_filter}
+                        AND kd.superseded_by IS NULL"""
             rows = await conn.fetch(sql, *[uuid.UUID(cid) for cid in current_ids])
 
             next_ids = []
@@ -317,10 +324,12 @@ class PgStore:
                     visited.add(follow_id)
                     next_ids.append(follow_id)
                     results.append({
-                        "source_id": str(r["source_id"]),
-                        "target_id": str(r["target_id"]),
+                        "id": str(r["id"]),
+                        "title": r["title"],
+                        "doc_type": r["doc_type"],
                         "relation": r["relation"],
                         "confidence": r["confidence"],
+                        "depth": depth + 1,
                     })
             current_ids = next_ids
 
@@ -391,7 +400,8 @@ class PgStore:
         where = " AND ".join(conditions)
         direction = "DESC" if order == "newest" else "ASC"
 
-        sql = f"""SELECT id, title, scope, doc_type, oracle_name, source_project, created_at
+        sql = f"""SELECT id, title, scope, doc_type, oracle_name, source_project, created_at,
+                         LEFT(content, 500) as content, summary
                   FROM knowledge_documents
                   WHERE {where}
                   ORDER BY created_at {direction}
@@ -405,9 +415,270 @@ class PgStore:
                 "doc_type": r["doc_type"], "oracle_name": r["oracle_name"],
                 "source_project": r["source_project"],
                 "created_at": str(r["created_at"]),
+                "content": r["content"] or "",
+                "summary": r["summary"] or "",
             }
             for r in rows
         ]
+
+
+    # --- Search Topics ---
+
+    async def add_search_topic(self, scope: str, topic: str, source: str = "web",
+                               frequency: str = "daily") -> dict:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """INSERT INTO search_topics (scope, topic, source, frequency)
+                   VALUES ($1, $2, $3, $4)
+                   ON CONFLICT (scope, topic, source) DO UPDATE
+                   SET enabled = true, frequency = $4, last_searched = NULL
+                   RETURNING id, enabled""",
+                scope, topic, source, frequency,
+            )
+        return {"id": str(row["id"]), "scope": scope, "topic": topic, "source": source,
+                "enabled": row["enabled"], "status": "created"}
+
+    async def remove_search_topic(self, topic_id: str) -> dict:
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM search_topics WHERE id = $1", uuid.UUID(topic_id)
+            )
+        deleted = "DELETE 1" in result
+        return {"id": topic_id, "status": "deleted" if deleted else "not_found"}
+
+    async def list_search_topics(self, scope: str | None = None,
+                                  enabled_only: bool = False) -> list[dict]:
+        conditions = []
+        params: list = []
+        idx = 1
+
+        if scope:
+            conditions.append(f"scope = ${idx}")
+            params.append(scope)
+            idx += 1
+        if enabled_only:
+            conditions.append("enabled = true")
+
+        where = " AND ".join(conditions) if conditions else "1=1"
+        sql = f"""SELECT id, scope, topic, source, frequency, enabled, last_searched, created_at
+                  FROM search_topics WHERE {where} ORDER BY scope, topic"""
+
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+        return [
+            {
+                "id": str(r["id"]), "scope": r["scope"], "topic": r["topic"],
+                "source": r["source"], "frequency": r["frequency"],
+                "enabled": r["enabled"], "last_searched": str(r["last_searched"]) if r["last_searched"] else None,
+                "created_at": str(r["created_at"]),
+            }
+            for r in rows
+        ]
+
+    async def update_search_topic_last_searched(self, topic_id: str) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE search_topics SET last_searched = NOW() WHERE id = $1",
+                uuid.UUID(topic_id),
+            )
+
+    async def toggle_search_topic(self, topic_id: str, enabled: bool) -> dict:
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE search_topics SET enabled = $1 WHERE id = $2",
+                enabled, uuid.UUID(topic_id),
+            )
+        updated = "UPDATE 1" in result
+        return {"id": topic_id, "enabled": enabled, "status": "updated" if updated else "not_found"}
+
+    async def find_by_source_file(self, source_file: str, scope: str) -> dict | None:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """SELECT id, source_file FROM knowledge_documents
+                   WHERE source_file = $1 AND scope = $2 AND superseded_by IS NULL
+                   LIMIT 1""",
+                source_file, scope,
+            )
+        if row:
+            return {"id": str(row["id"]), "source_file": row["source_file"]}
+        return None
+
+
+    # --- Reconcile Log ---
+
+    async def start_reconcile_log(self, scope: str | None = None, dry_run: bool = False) -> dict:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """INSERT INTO reconcile_log (scope, dry_run, status)
+                   VALUES ($1, $2, 'running')
+                   RETURNING id, started_at""",
+                scope, dry_run,
+            )
+        return {"id": str(row["id"]), "started_at": str(row["started_at"])}
+
+    async def complete_reconcile_log(
+        self,
+        log_id: str,
+        merged_duplicates: int = 0,
+        removed_duplicates: int = 0,
+        conflicts_found: int = 0,
+        conflicts_resolved: int = 0,
+        status: str = "completed",
+        error_message: str | None = None,
+    ) -> dict:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """UPDATE reconcile_log
+                   SET completed_at = NOW(),
+                       merged_duplicates = $2,
+                       removed_duplicates = $3,
+                       conflicts_found = $4,
+                       conflicts_resolved = $5,
+                       status = $6,
+                       error_message = $7
+                   WHERE id = $1
+                   RETURNING completed_at""",
+                uuid.UUID(log_id), merged_duplicates, removed_duplicates,
+                conflicts_found, conflicts_resolved, status, error_message,
+            )
+        return {"id": log_id, "status": status, "completed_at": str(row["completed_at"]) if row else None}
+
+    async def list_reconcile_log(self, limit: int = 20) -> list[dict]:
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT id, started_at, completed_at, scope, dry_run,
+                          merged_duplicates, removed_duplicates,
+                          conflicts_found, conflicts_resolved,
+                          status, error_message
+                   FROM reconcile_log
+                   ORDER BY started_at DESC
+                   LIMIT $1""",
+                limit,
+            )
+        return [
+            {
+                "id": str(r["id"]),
+                "started_at": str(r["started_at"]),
+                "completed_at": str(r["completed_at"]) if r["completed_at"] else None,
+                "scope": r["scope"],
+                "dry_run": r["dry_run"],
+                "merged_duplicates": r["merged_duplicates"],
+                "removed_duplicates": r["removed_duplicates"],
+                "conflicts_found": r["conflicts_found"],
+                "conflicts_resolved": r["conflicts_resolved"],
+                "status": r["status"],
+                "error_message": r["error_message"],
+            }
+            for r in rows
+        ]
+
+
+    # --- Pending Reviews (LINE confirmation flow) ---
+
+    async def create_pending_review(self, review: dict) -> dict:
+        import json
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """INSERT INTO pending_reviews
+                   (title, content, summary, scope, doc_type, source_type, source_project,
+                    oracle_name, tags, concepts, metadata, reply_token, user_id, chat_id)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
+                           $9::jsonb, $10::jsonb, $11::jsonb, $12, $13, $14)
+                   RETURNING id, created_at""",
+                review["title"], review["content"], review.get("summary"),
+                review.get("scope", "shared"), review.get("doc_type", "note"),
+                review.get("source_type", "line"), review.get("source_project"),
+                review.get("oracle_name"), json.dumps(review.get("tags", [])),
+                json.dumps(review.get("concepts", [])), json.dumps(review.get("metadata", {})),
+                review.get("reply_token"), review.get("user_id"), review.get("chat_id"),
+            )
+        return {"id": str(row["id"]), "created_at": str(row["created_at"])}
+
+    async def get_pending_review_for_user(self, user_id: str) -> dict | None:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """SELECT id, title, content, summary, scope, doc_type, tags, concepts, metadata
+                   FROM pending_reviews
+                   WHERE user_id = $1 AND status = 'pending' AND expires_at > NOW()
+                   ORDER BY created_at DESC
+                   LIMIT 1""",
+                user_id,
+            )
+        if row:
+            return _row_to_dict(row)
+        return None
+
+    async def get_pending_review_for_chat(self, chat_id: str) -> dict | None:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """SELECT id, title, content, summary, scope, doc_type, tags, concepts, metadata
+                   FROM pending_reviews
+                   WHERE chat_id = $1 AND status = 'pending' AND expires_at > NOW()
+                   ORDER BY created_at DESC
+                   LIMIT 1""",
+                chat_id,
+            )
+        if row:
+            return _row_to_dict(row)
+        return None
+
+    async def confirm_pending_review(self, review_id: str) -> dict:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """UPDATE pending_reviews
+                   SET status = 'confirmed'
+                   WHERE id = $1 AND status = 'pending'
+                   RETURNING title, content, summary, scope, doc_type, source_type,
+                             source_project, oracle_name, tags, concepts, metadata""",
+                uuid.UUID(review_id),
+            )
+        if not row:
+            return {"status": "not_found"}
+        return {
+            "status": "confirmed",
+            "title": row["title"],
+            "content": row["content"],
+            "summary": row["summary"],
+            "scope": row["scope"],
+            "doc_type": row["doc_type"],
+            "source_type": row["source_type"],
+            "source_project": row["source_project"],
+            "oracle_name": row["oracle_name"],
+            "tags": row["tags"],
+            "concepts": row["concepts"],
+            "metadata": row["metadata"],
+        }
+
+    async def cancel_pending_review(self, review_id: str) -> dict:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """UPDATE pending_reviews
+                   SET status = 'cancelled'
+                   WHERE id = $1 AND status = 'pending'
+                   RETURNING id""",
+                uuid.UUID(review_id),
+            )
+        if not row:
+            return {"status": "not_found"}
+        return {"status": "cancelled", "id": str(row["id"])}
+
+    async def expire_pending_reviews(self) -> int:
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                """UPDATE pending_reviews
+                   SET status = 'expired'
+                   WHERE status = 'pending' AND expires_at <= NOW()"""
+            )
+        # Parse "UPDATE N" result
+        parts = result.split()
+        return int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+
+
+    # --- Cleanup (for tests) ---
+
+    async def clean_pending_reviews(self) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute("DELETE FROM pending_reviews")
 
 
 def _row_to_dict(row: asyncpg.Record) -> dict:

@@ -97,6 +97,11 @@ class QdrantStore:
             conditions.append(FieldCondition(key="doc_type", match=MatchValue(value=doc_type)))
         if oracle:
             conditions.append(FieldCondition(key="oracle_name", match=MatchValue(value=oracle)))
+        if source_project:
+            conditions.append(FieldCondition(key="source_project", match=MatchValue(value=source_project)))
+        if concepts:
+            for concept in concepts:
+                conditions.append(FieldCondition(key="concepts", match=MatchValue(value=concept)))
 
         search_filter = Filter(must=conditions) if conditions else None
 

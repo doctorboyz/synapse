@@ -18,6 +18,7 @@ class OllamaEmbedder:
 
     def __init__(self, settings: Settings | None = None):
         self._settings = settings or Settings()
+        self.settings = self._settings
         self._base_url = self._settings.ollama_url
         self._model = self._settings.embedding_model
         self._dim = self._settings.embedding_dim

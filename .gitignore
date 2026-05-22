@@ -30,3 +30,6 @@ htmlcov/
 # Environment
 .env
 .env.local
+
+# Learn: ignore origin symlinks (source lives in ghq)
+ψ/learn/**/origin
