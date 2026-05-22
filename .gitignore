@@ -31,5 +31,8 @@ htmlcov/
 .env
 .env.local
 
+# Docker secrets (per-project)
+docker/.env
+
 # Learn: ignore origin symlinks (source lives in ghq)
 ψ/learn/**/origin
